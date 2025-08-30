@@ -1,0 +1,9 @@
+{
+  "devDependencies": {
+    "standard-version": "^9.5.0"
+  },
+  "scripts": {
+    "release": "standard-version && node -e \"require('child_process').execSync(`python scripts/update_version.py ${require('./package.json').version}`)\""
+  },
+  "version": "0.0.414"
+}

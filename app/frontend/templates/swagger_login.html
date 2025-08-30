@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8" />
+    <title>Anwill Notifier User</title>
+    <style>
+        body {
+            margin: 0; /* Убираем отступы по умолчанию у body */
+            font-family: 'Segoe UI', sans-serif; /* Основной шрифт */
+            background: linear-gradient(to bottom right, #eaf4ff, #d1e8ff); /* Градиент фона */
+            min-height: 100vh; /* Минимальная высота body — на весь экран */
+            display: flex; /* Flex-контейнер — для центрирования */
+            justify-content: center; /* Горизонтальное выравнивание контента по центру */
+            align-items: center; /* Вертикальное выравнивание контента по центру */
+            background-attachment: fixed; /* Фон фиксируется при прокрутке */
+        }
+
+        h2 {
+            text-align: center; /* Выравнивание заголовков по центру */
+        }
+
+        .wave-bg {
+            position: absolute; /* Фон в виде волны — абсолютное позиционирование */
+            top: 0; /* Отступ сверху — 0 */
+            left: 0; /* Отступ слева — 0 */
+            width: 100%; /* На всю ширину экрана */
+            height: 300px; /* Высота блока волны */
+            background: linear-gradient(135deg, #28a745 10%, #1976d2 80%); /* Градиент волны */
+            border-bottom-left-radius: 30% 10%; /* Скругление левого нижнего угла */
+            border-bottom-right-radius: 30% 10%; /* Скругление правого нижнего угла */
+            z-index: -1; /* Отправляем волну назад */
+        }
+
+        .container {
+            display: flex; /* Flex-контейнер — для колонок */
+            align-items: center; /* Вертикальное выравнивание контента по центру */
+            justify-content: center; /* Центрирование колонок */
+            flex-direction: column; /* Колонки идут сверху вниз */
+            gap: 30px; /* Отступ между колонками */
+            max-width: 100%; /* Максимальная ширина контейнера */
+            width: 100%; /* Ширина — 100% (но не больше max-width) */
+            animation: fadeIn 1s ease; /* Анимация появления */
+        }
+
+        .box {
+            width: 30%; /* На всю ширину экрана */
+            justify-content: center; /* Горизонтальное выравнивание контента по центру */
+            align-items: center; /* Вертикальное выравнивание контента по центру */
+            flex-direction: column; /* Колонки идут сверху вниз */
+            background: white; /* Белый фон для бокса */
+            border-radius: 16px; /* Скругление углов */
+            padding: 30px; /* Внутренние отступы */
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.08); /* Тень */
+        }
+
+        .info-box h2 {
+            font-size: 1.6em; /* Размер заголовка */
+            color: #0d47a1; /* Цвет текста */
+            margin-bottom: 15px; /* Отступ снизу */
+        }
+
+        .info-box p {
+            font-size: 1em; /* Размер текста */
+            color: #333; /* Цвет текста */
+            margin: 10px 0; /* Вертикальные отступы */
+            line-height: 1.6; /* Межстрочный интервал */
+        }
+
+        .info-box a {
+            color: #1976d2; /* Цвет ссылок */
+            text-decoration: none; /* Убираем подчёркивание */
+        }
+        .info-box a:hover {
+            text-decoration: underline; /* Добавляем подчёркивание при наведении */
+        }
+
+        .login-container h1 {
+            font-size: 1.4em; /* Размер заголовка */
+            color: #0d47a1; /* Цвет текста */
+            text-align: center; /* Центрируем заголовок */
+            margin-bottom: 20px; /* Отступ снизу */
+        }
+
+        .login-form {
+            display: flex; /* Flex для полей ввода */
+            flex-direction: column; /* Поля идут сверху вниз */
+            align-items: center; /* Центрируем поля */
+        }
+
+        .login-form input {
+            width: 100%; /* Полная ширина */
+            padding: 12px; /* Внутренние отступы */
+            margin-bottom: 15px; /* Отступ снизу */
+            border: 1px solid #ccc; /* Граница */
+            border-radius: 8px; /* Скругление углов */
+            font-size: 1em; /* Размер текста */
+            background-color: #fff; /* Белый фон */
+            color: #333; /* Цвет текста */
+            box-sizing: border-box; /* Учитываем padding в ширине */
+        }
+
+        .login-form button {
+            width: 100%; /* Полная ширина */
+            padding: 12px; /* Внутренние отступы */
+            background-color: #0d47a1; /* Синий фон */
+            color: white; /* Белый текст */
+            border: none; /* Убираем границу */
+            border-radius: 8px; /* Скругляем углы */
+            font-size: 1em; /* Размер текста */
+            cursor: pointer; /* Курсор — указатель */
+            transition: background-color 0.3s ease; /* Плавная смена цвета при наведении */
+        }
+
+        .login-form button:hover {
+            background-color: #1565c0; /* Цвет при наведении */
+        }
+
+        .error {
+            color: #d93025; /* Красный цвет текста ошибки */
+            text-align: center; /* Центрируем текст */
+            margin-top: 10px; /* Отступ сверху */
+            display: none; /* Скрыто по умолчанию */
+        }
+
+        #toggleReadmeBtn {
+            width: 100%; /* Полная ширина */
+            text-align: center; /* Центрируем текст */
+            font-family: monospace; /* Моноширинный шрифт */
+            background: #d32f2f; /* Красный фон */
+            color: white; /* Белый текст */
+            border: none; /* Убираем границу */
+            border-radius: 8px; /* Скругляем углы */
+            padding: 12px 10px; /* Отступы */
+            font-size: 1em; /* Размер текста */
+            cursor: pointer; /* Курсор — указатель */
+            transition: background-color 0.3s ease; /* Плавная смена цвета */
+            margin-top: 10px; /* Отступ сверху */
+        }
+        #toggleReadmeBtn:hover {
+            background: #b71c1c; /* Цвет при наведении */
+        }
+
+        #readmeWrapper {
+            width: 100%;
+            display: flex;
+            justify-content: center; /* Центрируем содержимое по горизонтали */
+            margin-top: 15px; /* Отступ сверху */
+        }
+
+        #readmeContainer {
+            max-height: 0; /* Скрыт по умолчанию */
+            overflow: auto;
+            background: #1c1c1c;
+            color: #ddd;
+            font-family: monospace;
+            border-radius: 15px;
+            margin-top: 15px;
+            width: 1024px;
+            margin-left: auto;
+            margin-right: auto;
+            transition: max-height 2s ease, padding 2s ease;
+            padding: 0; /* Без отступов в скрытом состоянии */
+        }
+        #readmeContainer.open {
+            max-height: 768px; /* Высота для раскрытия */
+            padding: 20px;
+            margin-bottom: 40px; /* Отступ снизу */
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0; /* Начальная прозрачность */
+                transform: translateY(20px); /* Смещение вниз */
+            }
+            to {
+                opacity: 1; /* Полная видимость */
+                transform: translateY(0); /* Без смещения */
+            }
+        }
+        @media (max-width: 1500px) {
+          .box {
+            width: 50%;
+          }
+          #readmeContainer {
+            width: 80%;
+          }
+        }
+
+        @media (max-width: 1000px) {
+          .box {
+            width: 80%;
+          }
+          #readmeContainer {
+            width: 90%;
+          }
+        }
+
+        @media (max-width: 768px) {
+          .box {
+            width: 90%;
+          }
+          #readmeContainer {
+            width: 90%;
+          }
+        }
+
+        @media (min-width: 1500px) {
+          .box {
+            width: 640px;
+          }
+          #readmeContainer {
+            width: 1280px;
+          }
+        }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="../static/main.js"></script>
+</head>
+
+<body>
+<div class="wave-bg"></div>
+
+<div class="container">
+    <div class="box info-box">
+        <h2>👋 Добро пожаловать в Anwill Back User</h2>
+        <p>Мы рады видеть идейных разработчиков с бесконечной фантазией и амбициями!</p>
+        <p>🔐 Чтобы получить доступ к API, зарегистрируйтесь на <a href="https://id.anwill.fun" target="_blank">id.anwill.fun</a> или <a href="https://2id.anwill.fun" target="_blank">2id.anwill.fun</a> (Dev).</p>
+        <p>📧 Далее свяжитесь с нами по почте: <a href="mailto:info@anwill.fun">info@anwill.fun</a></p>
+        <p>🤖 Или через телеграм бота: <a href="https://t.me/AnwillFormsBot" target="_blank">@AnwillFormsBot</a> &mdash;
+            напишите: <em>«хочу присоединиться к проекту»</em>.</p>
+
+    </div>
+    <div class="login-container box">
+        <h1>Swagger UI Access</h1>
+        <form id="loginForm" class="login-form">
+            <input type="username" name="username" placeholder="Username" required>
+            <input type="password" name="password" placeholder="Password" required>
+            <button type="submit">Login</button>
+        </form>
+        <div id="errorMessage" class="error">
+            Incorrect password. Please try again.
+        </div>
+        <button id="toggleReadmeBtn">📖 Ознакомиться с README</button>
+    </div>
+    <div id="readmeWrapper">
+      <div id="readmeContainer"></div>
+    </div>
+</div>
+
+<!-- Новый обёрточный контейнер для README -->
+
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const toggleBtn = document.getElementById('toggleReadmeBtn');
+    const readmeContainer = document.getElementById('readmeContainer');
+
+    toggleBtn.addEventListener('click', async function(e) {
+        e.preventDefault();
+        if (!readmeContainer.classList.contains('open')) {
+            if (!readmeContainer.innerHTML.trim()) {
+                try {
+                    const response = await fetch('/user/README.md');
+                    if (response.ok) {
+                        const readmeText = await response.text();
+                        readmeContainer.innerHTML = marked.parse(readmeText);
+                    } else {
+                        readmeContainer.textContent = 'Не удалось загрузить README.md';
+                    }
+                } catch (error) {
+                    readmeContainer.textContent = 'Ошибка загрузки README.md';
+                    console.error(error);
+                }
+            }
+            readmeContainer.classList.add('open');
+        } else {
+            readmeContainer.classList.remove('open');
+        }
+    });
+});
+</script>
+
+
+</body>
+
+</html>
+
+

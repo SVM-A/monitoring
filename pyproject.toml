@@ -1,0 +1,73 @@
+[build-system]
+requires = ["setuptools>=61", "setuptools_scm[toml]", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "monitoring"
+description = "Backend application. See API docs at http://localhost:55666/catalog/docs & http://localhost:55666/platform/docs"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Proprietary" }
+authors = [
+  { name = "dmitrij-el", email = "dmitrijelectro@gmail.com" }
+]
+dynamic = ["version"]
+dependencies = [
+    "aiobotocore>=2.23.0",
+    "alembic>=1.16.2",
+    "asyncpg>=0.30.0",
+    "bcrypt>=4.3.0",
+    "black>=25.1.0",
+    "cachetools>=6.1.0",
+    "celery>=5.5.3",
+    "email-validator>=2.2.0",
+    "fastapi>=0.115.14",
+    "fastapi-mail>=1.5.0",
+    "gunicorn>=23.0.0",
+    "httpx>=0.28.1",
+    "jinja2>=3.1.6",
+    "loguru>=0.7.3",
+    "minio>=7.2.15",
+    "numpy>=2.3.1",
+    "openpyxl>=3.1.5",
+    "pandas>=2.3.0",
+    "passlib>=1.7.4",
+    "pillow>=11.2.1",
+    "psycopg2-binary>=2.9.10",
+    "pydantic>=2.11.7",
+    "pydantic-settings>=2.10.1",
+    "python-dotenv>=1.1.1",
+    "python-multipart>=0.0.20",
+    "redis>=5.3.0",
+    "setuptools>=80.9.0",
+    "setuptools-scm>=8.3.1",
+    "slowapi>=0.1.9",
+    "sqlalchemy>=2.0.41",
+    "taskiq-redis>=1.0.9",
+    "toml>=0.10.2",
+    "uvicorn[standard]>=0.35.0",
+    "wheel>=0.45.1",
+    "tomlkit>=0.13.3",
+    "python-jose>=3.5.0",
+    "playwright>=1.53.0",
+    "tldextract>=5.3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "isort",
+    "mypy",
+    "pytest",
+    "pytest-asyncio"
+]
+
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+[tool.setuptools_scm]
+version_file = "version.txt"
+

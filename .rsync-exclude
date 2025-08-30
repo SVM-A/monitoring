@@ -1,0 +1,38 @@
+# Git и IDE
+.git/
+.github/
+.gitignore
+.idea/
+.vscode/
+
+# Docker-артефакты
+*.tar
+docker-compose*.yml
+
+# Python и окружения
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+ENV/
+
+# Node/JS
+node_modules/
+frontend/node_modules/
+frontend/dist/
+
+# Секреты и переменные
+.env
+.env.*
+*.sqlite3
+*.log
+
+# Кеш, временные файлы
+.DS_Store
+*.bak
+*.swp
+
+# Папки, не нужные на сервере
+tests/

@@ -1,0 +1,95 @@
+
+services:
+  back-user-app:
+    user: "1000:1000"
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: back-user-app:${VERSION_TAG:-dev}
+    env_file: ../.env
+    container_name: back-user-app
+    ports:
+      - "55666:55666"
+    networks:
+      integra_ecosystem_developer_network:
+        ipv4_address: 172.113.10.2
+    volumes:
+      - /anwill_projects/back/user/app/imgs:/app/imgs
+      - /anwill_projects/back/user/app/logs:/app/logs
+    restart: always
+    command: >
+      sh -c "alembic -c /app/alembic.ini upgrade head && 
+      gunicorn run:app -c gunicorn.conf.py"
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:55666/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+#  back_user_celery_worker:
+#    build:
+#      context: ..
+#      dockerfile: ../Dockerfile
+#    container_name: back_user_celery_worker
+#    working_dir: /app
+#    command: >
+#      celery -A services.celery:app worker --loglevel=info --logfile=/app/logs/celery.log
+#    volumes:
+#      - .:/app
+#    networks:
+#      integra_ecosystem_developer_network:
+#        ipv4_address: 172.113.10.60
+#    depends_on:
+#      - back-user-app
+#    healthcheck:
+#      test: ["CMD", "celery", "-A", "services.celery", "status"]
+#      interval: 10s
+#      timeout: 5s
+#      retries: 3
+#
+#
+#
+#
+#  back_user_dashboard:
+#    image: mher/flower
+#    container_name: back_user_dashboard
+#    ports:
+#      - "52121:5555"
+#    environment:
+#      - CELERY_BROKER_URL=redis://${REDIS_HOST}:${REDIS_PORT}/${REDIS_CELERY_INDEX}
+#      - CELERY_RESULT_BACKEND=redis://${REDIS_HOST}:${REDIS_PORT}/${REDIS_CELERY_INDEX}
+##      - FLOWER_BASIC_AUTH=${USER_FLOWER_LOGIN}:${USER_FLOWER_PASSWORD}
+#    networks:
+#      integra_ecosystem_developer_network:
+#        ipv4_address: 172.113.10.61
+#    depends_on:
+#      - back-user-app
+#      - back_user_celery_worker
+#    healthcheck:
+#      test: [ "CMD", "curl", "-f", "http://localhost:5555" ]
+#      interval: 30s
+#      timeout: 10s
+#      retries: 3
+#
+#  back_user_taskiq_worker:
+#    build: ..
+#    container_name: back_user_taskiq_worker
+#    command: taskiq worker --log-level=INFO services.taskiq:broker
+#    ports:
+#      - "52110:8000"
+#    volumes:
+#      - .:/app
+#    networks:
+#      integra_ecosystem_developer_network:
+#        ipv4_address: 172.113.10.50
+#    depends_on:
+#      - back-user-app
+#    healthcheck:
+#      test: [ "CMD", "pgrep", "python" ]
+#      interval: 30s
+#      timeout: 10s
+#      retries: 3
+
+networks:
+  integra_ecosystem_developer_network:
+    external: True

@@ -1,0 +1,137 @@
+services:
+  user-pstgr:
+    image: postgres:16.3-alpine
+    container_name: user-pstgr
+    env_file: ../.env
+    environment:
+      POSTGRES_DB: ${USER_PSTGR_NAME}
+      POSTGRES_USER: ${USER_PSTGR_USER}
+      POSTGRES_PASSWORD: ${USER_PSTGR_PASS}
+    ports:
+      - "52101:5432"
+    volumes:
+      - user_pstgr:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${USER_PSTGR_USER} -d ${USER_PSTGR_NAME} || exit 1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      integra_ecosystem_developer_network:
+        ipv4_address: 172.113.10.100
+    restart: always
+
+  rabbitmq:
+    image: rabbitmq:3.12-management
+    container_name: rabbitmq
+    env_file: ../.env
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS}
+    ports:
+      - "50710:5672"
+      - "50711:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: [ "CMD", "rabbitmqctl", "status" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      integra_ecosystem_developer_network:
+        ipv4_address: 172.113.2.155
+    restart: always
+
+
+  minio:
+    image: bitnami/minio:2024.7.26
+    container_name: minio
+    env_file: ../.env
+    ports:
+      - '50610:50610'
+      - '50611:50611'
+    environment:
+      MINIO_ROOT_USER: ${MINIO_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_PASS}
+      MINIO_SKIP_CLIENT: "yes"
+      MINIO_DOMAIN: ${MINIO_DOMAIN}
+      MINIO_SERVER_URL: ${MINIO_SERVER_URL}
+      MINIO_BROWSER_REDIRECT_URL: ${MINIO_BROWSER_REDIRECT_URL}
+      MINIO_API_PORT_NUMBER: "50610"
+      MINIO_CONSOLE_PORT_NUMBER: "50611"
+    volumes:
+      - minio_data:/data
+      - /anwill_projects/minio_certs:/root/.minio/certs:ro
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "curl", "-k", "http://localhost:50610/minio/health/live" ]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+    networks:
+      integra_ecosystem_developer_network:
+        ipv4_address: 172.113.2.100
+
+
+  redis:
+    image: redis:latest
+    container_name: redis
+    env_file: ../.env
+    restart: always
+    command: redis-server --requirepass ${REDIS_PASS}
+    ports:
+      - "50510:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      integra_ecosystem_developer_network:
+        ipv4_address: 172.113.2.10
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASS}", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+
+  back-user-app:
+    user: "1000:1000"
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: back-user-app:${VERSION_TAG}
+    env_file: ../.env
+    container_name: back-user-app
+    ports:
+      - "55666:55666"
+    networks:
+      integra_ecosystem_developer_network:
+        ipv4_address: 172.113.10.2
+    volumes:
+      - /anwill_projects/back/user/app/imgs:/app/imgs
+      - /anwill_projects/back/user/app/logs:/app/logs
+    restart: always
+    command: >
+      sh -c "alembic -c /app/alembic.ini upgrade head && 
+      gunicorn run:app -c gunicorn.conf.py"
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:55666/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  user_pstgr:
+  redis_data:
+  rabbitmq_data:
+  minio_data:
+  minio_ssl:
+
+networks:
+  integra_ecosystem_developer_network:
+    external: True

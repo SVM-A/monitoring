@@ -1,0 +1,85 @@
+# compose.databases.yml
+
+services:
+  rabbitmq:
+    image: rabbitmq:3.12-management
+    container_name: rabbitmq
+    env_file: ../.env
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS}
+    ports:
+      - "50710:5672"
+      - "50711:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: [ "CMD", "rabbitmqctl", "status" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      integra_ecosystem_developer_network:
+        ipv4_address: 172.113.2.155
+    restart: always
+
+
+  minio:
+    image: minio/minio:latest
+    container_name: minio
+    restart: unless-stopped
+    env_file: ../.env
+    environment:
+      MINIO_ROOT_USER: ${MINIO_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_PASS}
+      MINIO_SERVER_URL: ${MINIO_SERVER_URL}
+      MINIO_BROWSER_REDIRECT_URL: ${MINIO_BROWSER_REDIRECT_URL}
+    command: server /data --console-address ":50611" --address ":50610"
+    ports:
+      - "50610:50610"
+      - "50611:50611"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: [ "CMD", "curl", "http://localhost:50610/minio/health/live" ]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+    networks:
+      integra_ecosystem_developer_network:
+        ipv4_address: 172.113.2.100
+
+
+  redis:
+    image: redis:latest
+    container_name: redis
+    env_file: ../.env
+    restart: always
+    command: redis-server --requirepass ${REDIS_PASS}
+    ports:
+      - "50510:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASS}", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+    networks:
+      integra_ecosystem_developer_network:
+        ipv4_address: 172.113.2.10
+
+volumes:
+  redis_data:
+  rabbitmq_data:
+  minio_data:
+
+networks:
+  integra_ecosystem_developer_network:
+    external: true

@@ -1,0 +1,30 @@
+
+services:
+  user-pstgr:
+    image: postgres:16.3-alpine
+    container_name: user-pstgr
+    env_file: ../.env
+    environment:
+      POSTGRES_DB: ${USER_PSTGR_NAME}
+      POSTGRES_USER: ${USER_PSTGR_USER}
+      POSTGRES_PASSWORD: ${USER_PSTGR_PASS}
+    ports:
+      - "52101:5432"
+    volumes:
+      - user_pstgr:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${USER_PSTGR_USER} -d ${USER_PSTGR_NAME} || exit 1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      integra_ecosystem_developer_network:
+        ipv4_address: 172.113.10.100
+    restart: always
+
+volumes:
+  user_pstgr:
+
+networks:
+  integra_ecosystem_developer_network:
+    external: True
