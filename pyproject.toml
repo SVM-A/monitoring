@@ -51,6 +51,15 @@ dependencies = [
     "python-jose>=3.5.0",
     "playwright>=1.53.0",
     "tldextract>=5.3.0",
+    "opencv-python>=4.12.0.88",
+    "onnxruntime>=1.22.1",
+    "paddleocr>=3.2.0",
+    "paddlepaddle>=3.1.1",
+    "onvif-zeep>=0.2.12",
+    "pyyaml>=6.0.2",
+    "easyocr>=1.7.2",
+    "onnxruntime-gpu>=1.22.0",
+    "paddlepaddle-gpu>=2.6.2",
 ]
 
 [project.optional-dependencies]

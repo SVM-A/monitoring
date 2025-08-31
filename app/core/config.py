@@ -3,8 +3,11 @@
 from enum import Enum
 from functools import lru_cache
 from pathlib import Path
+from typing import Optional, Literal
+from urllib.parse import quote
 
-from pydantic import EmailStr, SecretStr
+
+from pydantic import EmailStr, SecretStr, IPvAnyAddress, Field
 from pydantic_settings import BaseSettings
 
 BASE_PATH = Path(__file__).resolve().parent.parent.parent
@@ -136,29 +139,72 @@ class MailSenderConfig(Settings):
     MAIL_SERVER: str
     MAIL_PORT: int
 
-class FalconEyeResiverSettings(Settings):
-    IP_ADDRESS: str = '192.168.1.20'
-    PORT_ADDRESS: int = 554
-    USERNAME_CAMERAS: str = 'admin'
-    PASSWORD_CAMERAS: str
+# ───────────────────────── FalconEye Receiver ─────────────────────────
+class FalconEyeReceiverSettings(Settings):
+    IP_ADDRESS_FOR_CAMS: IPvAnyAddress = Field('192.168.1.20')
+    RTSP_PORT_FOR_CAMS: int = Field(554, ge=1, le=65535)
+    USERNAME_FOR_CAMS: str = Field('admin')
+    PASSWORD_FOR_CAMS: SecretStr  # из переменных окружения, .env и т.п.
+
+    # дефолты для параметров потока
+    default_channel: int = 2
+    default_subtype: int = 0
+
+    def rtsp(self, channel: Optional[int] = None, subtype: Optional[int] = None) -> str:
+        """Собирает RTSP-URL. Если channel/subtype не заданы — берём дефолты."""
+        ch = self.default_channel if channel is None else channel
+        st = self.default_subtype if subtype is None else subtype
+        pwd = quote(self.PASSWORD_FOR_CAMS.get_secret_value(), safe="")  # экранируем спецсимволы
+        return (
+            f"rtsp://{self.USERNAME_FOR_CAMS}:{pwd}@{self.IP_ADDRESS_FOR_CAMS}:{self.RTSP_PORT_FOR_CAMS}"
+            f"/cam/realmonitor?channel={ch}&subtype={st}"
+        )
 
     @property
-    def cam_stream(self, num_cam: int = 2, subtype: int = 0) -> str:
-        return f'rtsp://{self.USERNAME}:{self.PASSWORD}@{self.IP_ADRESS}:{self.PORT_ADRESS}/cam/realmonitor?channel={num_cam}&subtype={subtype}'
+    def default_rtsp(self) -> str:
+        """Готовый URL с дефолтными параметрами."""
+        return self.rtsp()
 
 
-class FalconEyeMainCameraSettings(Settings):
-    PORT_ADDRESS: int = 554
-    USERNAME_CAMERAS: str = 'admin'
-    PASSWORD_CAMERAS: str
+# ───────────────────────── FalconEye Cameras ─────────────────────────
+class FalconEyeCameraSettings(Settings):
+    RTSP_PORT_FOR_CAMS: int = Field(554, ge=1, le=65535)
+    USERNAME_FOR_CAMS: str = Field('admin')
+    PASSWORD_FOR_CAMS: SecretStr
+
+    IP_ADDRESS_FOR_MAIN_CAM: IPvAnyAddress = Field('192.168.1.10')
+    IP_ADDRESS_FOR_SECOND_CAM: IPvAnyAddress = Field('192.168.1.11')
+
+    default_mode: Literal['real', 'replay'] = 'real'
+    default_idc: int = 1
+    default_ids: int = 1
+
+    def stream(
+        self,
+        which: Literal['main', 'second'] = 'main',
+        mode: Optional[str] = None,
+        idc: Optional[int] = None,
+        ids: Optional[int] = None,
+    ) -> str:
+        """Собирает RTSP-URL для основной/второй камеры c дефолтами."""
+        mode = self.default_mode if mode is None else mode
+        idc = self.default_idc if idc is None else idc
+        ids = self.default_ids if ids is None else ids
+        ip = self.IP_ADDRESS_FOR_MAIN_CAM if which == 'main' else self.IP_ADDRESS_FOR_SECOND_CAM
+        pwd = quote(self.PASSWORD_FOR_CAMS.get_secret_value(), safe="")
+        return (
+            f"rtsp://{self.USERNAME_FOR_CAMS}:{pwd}@{ip}:{self.RTSP_PORT_FOR_CAMS}"
+            f"/stream?mode={mode}&idc={idc}&ids={ids}"
+        )
 
     @property
-    def main_cam_stream(self, mode: str = 'real', idc: int = 1, ids: int = 1) -> str:
-        return f"rtsp://{self.USERNAME}:{self.PASSWORD}@192.168.1.10:{self.PORT_ADRESS}/stream?mode={mode}&idc={idc}&ids={ids}"
+    def main_default(self) -> str:
+        return self.stream('main')
 
     @property
-    def second_cam_stream(self, mode: str = 'real', idc: int = 1, ids: int = 1) -> str:
-        return f"rtsp://{self.USERNAME}:{self.PASSWORD}@192.168.1.10:{self.PORT_ADRESS}/stream?mode={mode}&idc={idc}&ids={ids}"
+    def second_default(self) -> str:
+        return self.stream('second')
+
 
 
 # Lazy обёртки{self.IP_ADDRESS}
@@ -259,3 +305,33 @@ def base_api_user_url() -> str:
 @lru_cache()
 def base_photo_path() -> Path:
     return ProjectPathSettings().BASE_PHOTO_PATH
+
+
+@lru_cache
+def get_receiver_settings() -> FalconEyeReceiverSettings:
+    return FalconEyeReceiverSettings()
+
+@lru_cache
+def get_camera_settings() -> FalconEyeCameraSettings:
+    return FalconEyeCameraSettings()
+
+@lru_cache
+def falcon_eye_receiver_url(channel: Optional[int] = None, subtype: Optional[int] = None) -> str:
+    return get_receiver_settings().rtsp(channel=channel, subtype=subtype)
+
+
+# # дефолтный URL ресивера
+# url_default = get_receiver_settings().default_rtsp
+#
+# # с переопределением параметров
+# url_custom = get_receiver_settings().rtsp(channel=1, subtype=1)
+#
+# # основная камера (дефолты)
+# main_url = get_camera_settings().main_default
+#
+# # вторая камера с изменёнными параметрами
+# second_url = get_camera_settings().stream('second', mode='real', idc=2, ids=3)
+#
+# # через функцию с кэшем (как у тебя)
+# recv_url = falcon_eye_receiver_url()             # дефолты
+# recv_url2 = falcon_eye_receiver_url(1, 1)        # переопределение
