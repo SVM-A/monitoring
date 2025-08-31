@@ -5,10 +5,12 @@ from dataclasses import dataclass
 from typing import Optional
 import cv2
 import numpy as np
+import yaml
 
-from app.monitoring.capture.rtsp_capture.py import RTSPCaptureProcess, FramePacket
+from app.monitoring.capture.rtsp_capture import RTSPCaptureProcess, FramePacket
 from app.monitoring.detection.plate_detector import PlateDetector
 from app.monitoring.recognition.ocr_recognizer import OCRWorker, OCRTask
+from app.monitoring.display.publisher import DisplayPublisher
 from app.monitoring.roi.masks import MaskStore, apply_mask
 from app.monitoring.utils.regexes import classify_plate
 from app.monitoring.config_runtime import RuntimeOptions
@@ -35,6 +37,15 @@ class LPRPipeline:
                                           queue_size=rt.capture_queue_size, drop_newest=True)
         self.ocr_workers = [OCRWorker(self.q_ocr_in, self.q_ocr_out, rt) for _ in range(rt.ocr_workers)]
 
+        cam_node = yaml.safe_load(open(self.masks_path, "r", encoding="utf-8"))["cameras"][self.cam.name]
+        disp_cfg = cam_node.get("display", {}) if isinstance(cam_node, dict) else {}
+        self.display = None
+        if disp_cfg.get("enabled", False):
+            self.display = DisplayPublisher(
+                channel=disp_cfg.get("channel", f"lpr:{self.cam.name}:display"),
+                fps_limit=int(disp_cfg.get("fps_limit", 10)),
+            )
+
     def start(self):
         self.capture.start()
         for w in self.ocr_workers:
@@ -49,14 +60,16 @@ class LPRPipeline:
         mask_cfg = self.masks.get(self.cam.mask_name)
         win_name = f"LPR:{self.cam.name}"
         while True:
-            try:
-                pkt: FramePacket = self.q_frames.get(timeout=0.5)
-            except Exception:
-                continue
+            pkt = self.q_frames.get(timeout=0.5)
             frame = pkt.frame
-            roi = apply_mask(frame, mask_cfg)
 
-            # Детектим номера на ROI
+            # 1) ДИСПЛЕЙ: публикуем полный кадр (без вырезов)
+            if self.display:
+                self.display.maybe_publish(frame, kind="raw")
+
+            # 2) АНАЛИЗ: применяем маску только для анализа
+            roi = apply_mask(frame, mask_cfg, mode="analysis")
+
             boxes = self.detector.detect(roi)
             for b in boxes:
                 x1, y1, x2, y2 = b.xyxy

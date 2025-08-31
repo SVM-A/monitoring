@@ -1,13 +1,18 @@
-# =============================== config/cameras.yaml (пример) ===============================
+# =============================== config/cameras.yaml ===============================
 
 cameras:
   falcone_receiver_cam2:
-    rtsp:
-      provider: falcon_eye_receiver
-      channel: 2
-      subtype: 0
-    debug_window: true
-    mask:
+    rtsp: { provider: falcon_eye_receiver, channel: 2, subtype: 0 }
+
+    display:
+      enabled: true
+      kind: raw          # raw | annotated (при желании рисовать боксы)
+      fps_limit: 10      # чтобы не душить сеть/браузеры
+      channel: "lpr:falcone_receiver_cam2:display"  # имя канала вещания
+
+    mask:                # маска применяется ТОЛЬКО для анализа
+      enabled: true
+      apply_to: ["analysis"]    # ["analysis"], ["display"], ["analysis","display"], или []
       crop: [350, 250, 350, 200]
       polygon:
         - [450, 250]
@@ -23,12 +28,17 @@ cameras:
       idc: 1
       ids: 1
     mask:
-      crop: [500, 450, 550, 300]
-      polygon:
-        - [500, 450]
-        - [1050, 450]
-        - [1050, 750]
-        - [500, 650]
+      enabled: false
+
+    falcone_main_ip:
+      rtsp:
+        provider: falcon_eye_camera
+        which: second         # main | second
+        mode: real          # real | replay
+        idc: 1
+        ids: 1
+      mask:
+        enabled: false
 
   dahua_receiver_cam16:
     rtsp:
@@ -36,12 +46,7 @@ cameras:
       channel: 16
       subtype: 0
     mask:
-      crop: [0, 0, 1280, 720]
-      polygon:
-        - [0, 0]
-        - [1279, 0]
-        - [1279, 719]
-        - [0, 719]
+      enabled: false
 
   onvif_gate_cam:
     rtsp:
