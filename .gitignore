@@ -185,3 +185,5 @@ cython_debug/
 /.idea/inspectionProfiles/profiles_settings.xml
 /.idea/dictionaries/project.xml
 /.idea/vcs.xml
+/.idea/monitoring.iml
+/.idea/inspectionProfiles/Project_Default.xml
