@@ -5,6 +5,8 @@ import yaml
 from app.monitoring.pipeline import LPRPipeline, CameraConfig
 from app.monitoring.roi.masks import MaskStore
 from app.monitoring.config_runtime import RuntimeOptions
+from app.monitoring.config_resolver import resolve_rtsp
+
 
 """
 Пример запуска:
@@ -27,9 +29,11 @@ def main():
         cams = yaml.safe_load(f)
 
     cam_cfg = cams["cameras"][args.camera]
+    rtsp_url = resolve_rtsp(cam_cfg["rtsp"])
+
     cam = CameraConfig(
         name=args.camera,
-        rtsp_url=cam_cfg["rtsp"],
+        rtsp_url=rtsp_url,
         mask_name=args.camera,
         show_window=bool(cam_cfg.get("debug_window", False)),
     )

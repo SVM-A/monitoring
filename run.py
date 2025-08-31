@@ -1,38 +1,154 @@
 # app/run.py
 from pathlib import Path
 from typing import AsyncGenerator
-import uvicorn
-
-from app.api.v1.endpoints.stream import StreemAPI
-from app.core.config import get_project_path_settings
-from app.utils.logger import logger
 from contextlib import asynccontextmanager
+import os
+import sys
+import asyncio
+from multiprocessing import Process
+
+import uvicorn
+import yaml
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
+from app.api.v1.endpoints.stream import StreemAPI
+from app.core.config import get_project_path_settings
+from app.utils.logger import logger  # loguru
 from app.core.middlewares import LogRouteMiddleware, DynamicCORSMiddleware
 from app.db.dao.user import UserDAO
 from app.api.v1.base_api import ProtectedSwagger
-from app.api.v1.endpoints.user import AuthAPI, ProfileAPI, UserAPI, AdminAPI, BackgroundAPI, SecurityAPI
+from app.api.v1.endpoints.user import (
+    AuthAPI,
+    ProfileAPI,
+    UserAPI,
+    AdminAPI,
+    BackgroundAPI,
+    SecurityAPI,
+)
 from app.docs.load_docs import terms_of_service, contact, main_description
 from app.utils.reg_exceptions import register_exception_handlers
 from scripts.version import get_app_version
 
-logger.info('Генерируем Readme')
-# gen_readme()
+# ──────────────────────────────────────────────────────────────────────
+# Мониторинг LPR: запускается как отдельный процесс из lifespan FastAPI
+# ──────────────────────────────────────────────────────────────────────
+# Управление через ENV:
+#   LPR_ENABLED=1|0
+#   LPR_CAMERAS_YAML="config/cameras.yaml"
+#   LPR_CAMERA_KEY="falcone_receiver_cam2"
+#   LPR_DET_MODEL="models/plate_yolov5s.onnx"
+
+LPR_ENABLED = os.getenv("LPR_ENABLED", "1") == "1"
+LPR_CAMERAS_YAML = os.getenv("LPR_CAMERAS_YAML", "config/cameras.yaml")
+LPR_CAMERA_KEY = os.getenv("LPR_CAMERA_KEY", "falcone_receiver_cam2")
+LPR_DET_MODEL = os.getenv("LPR_DET_MODEL", "models/plate_yolov5s.onnx")
+
+# Логгеры с контекстом
+log_api = logger.bind(context="api")
+log_mon = logger.bind(context="monitor")
+
+# Функция-энтрипоинт для дочернего процесса мониторинга
+def _monitor_entrypoint(cameras_yaml: str, camera_key: str, det_model: str):
+    try:
+        # Инициализация логгера в дочернем процессе
+        from app.utils.logger import logger as _lg
+        _log = _lg.bind(context="monitor")
+
+        # Импорты внутри процесса, чтобы основной процесс стартовал даже если мониторинг не настроен
+        from app.monitoring.run_monitor import LPRPipeline, CameraConfig
+        from app.monitoring.roi.masks import MaskStore
+        from app.monitoring.config_runtime import RuntimeOptions
+        from app.monitoring.config_resolver import resolve_rtsp
+
+        with open(cameras_yaml, "r", encoding="utf-8") as f:
+            cams = yaml.safe_load(f)
+
+        cam_cfg = cams["cameras"][camera_key]
+        rtsp_url = resolve_rtsp(cam_cfg["rtsp"])
+
+        masks = MaskStore(cameras_yaml)
+        rt = RuntimeOptions.from_env()
+
+        cam = CameraConfig(
+            name=camera_key,
+            rtsp_url=rtsp_url,
+            mask_name=camera_key,
+            show_window=bool(cam_cfg.get("debug_window", False)),
+        )
+
+        _log.info(
+            "Старт LPR-пайплайна | camera='{}' model='{}' yaml='{}'",
+            camera_key,
+            det_model,
+            cameras_yaml,
+        )
+
+        pipe = LPRPipeline(cam=cam, masks=masks, rt=rt, detector_model=det_model)
+        pipe.run_forever()
+
+    except Exception as e:
+        # Логируем и выходим — API живёт отдельно
+        try:
+            _log.exception("Критическая ошибка процесса мониторинга: {}", e)
+        except Exception:
+            print(f"[MONITOR] Fatal error: {e}", file=sys.stderr)
+
+
+log_api.info("Генерируем Readme")
+# gen_readme()  # оставлено как в исходнике (комментарий)
+
 
 # Асинхронный контекстный менеджер для жизненного цикла приложения
 @asynccontextmanager
 async def lifespan(application: FastAPI) -> AsyncGenerator:
-    logger.info("Регистрируем исключения...")
-    register_exception_handlers(application)
-    await configure_routers()
-    logger.info("Проверка ролей в БД при старте приложения...")
-    await UserDAO.check_roles_in_db()
-    logger.info("Запускаем API...")
-    yield  # После этого приложение запустится
-    logger.info("Завершаем работу...")
+    monitor_proc: Process | None = None
+    try:
+        log_api.info("Регистрируем исключения...")
+        register_exception_handlers(application)
+
+        log_api.info("Инициализируем маршруты и API...")
+        await configure_routers()
+
+        log_api.info("Проверка ролей в БД при старте приложения...")
+        await UserDAO.check_roles_in_db()
+
+        # Запуск мониторинга (отдельный процесс)
+        if LPR_ENABLED:
+            try:
+                monitor_proc = Process(
+                    target=_monitor_entrypoint,
+                    args=(LPR_CAMERAS_YAML, LPR_CAMERA_KEY, LPR_DET_MODEL),
+                    name="lpr-monitor",
+                    daemon=True,
+                )
+                monitor_proc.start()
+                log_mon.info(
+                    "Процесс мониторинга запущен | pid={} camera_key='{}'",
+                    monitor_proc.pid,
+                    LPR_CAMERA_KEY,
+                )
+            except Exception as e:
+                log_mon.exception("Ошибка запуска мониторинга: {}", e)
+        else:
+            log_mon.info("Мониторинг отключён (LPR_ENABLED=0)")
+
+        log_api.info("Запускаем API...")
+        yield  # Приложение запущено
+
+    finally:
+        log_api.info("Завершаем работу приложения...")
+        if monitor_proc and monitor_proc.is_alive():
+            log_mon.info("Останавливаю процесс мониторинга…")
+            try:
+                monitor_proc.terminate()
+                monitor_proc.join(timeout=5)
+                if monitor_proc.is_alive():
+                    log_mon.warning("Процесс мониторинга не завершился вовремя")
+            except Exception as e:
+                log_mon.exception("Ошибка при остановке мониторинга: {}", e)
+
 
 app = FastAPI(
     lifespan=lifespan,
@@ -44,31 +160,30 @@ app = FastAPI(
     openapi_url="/openapi.json",
     docs_url="/docs",
     license_info={"name": "Proprietary", "url": "https://api.anwill.fun"},
-    swagger_ui_parameters={"persistAuthorization": True, "faviconUrl": "app/docs/favicon/favicon-96x96.png"},
+    swagger_ui_parameters={
+        "persistAuthorization": True,
+        "faviconUrl": "app/docs/favicon/favicon-96x96.png",
+    },
     root_path_in_servers=False,
     swagger_ui_init_oauth={
         "clientId": "swagger-client",
         "appName": "Swagger UI Anwill Back User",
-        "scopes": "USER DEVELOPER MODERATOR SUPPORT SYSADMIN ADMIN MANAGER",  # Используем явно заданные роли
+        "scopes": "USER DEVELOPER MODERATOR SUPPORT SYSADMIN ADMIN MANAGER",
         "usePkceWithAuthorizationCodeGrant": True,
-    }
+    },
 )
-#
-# # ====== Защита Swagger UI ======
+
+# ====== Защита Swagger UI (оставлено как в исходнике, закомменчено) ======
 # protected_swagger = ProtectedSwagger()
-#
-# # Основное приложение
 # @app.middleware("http")
 # async def main_app_swagger_auth(request: Request, call_next):
 #     return await protected_swagger.process_request(request, call_next)
-
 
 # ====== Остальная конфигурация ======
 # app.add_middleware(FingerPrintMiddleware)       # 1. Проверка ботов
 app.add_middleware(LogRouteMiddleware)         # 2. Логирование
 app.add_middleware(DynamicCORSMiddleware)      # 3. Динамический CORS
-# app.add_middleware(AutoRefreshMiddleware)      # 4. Авто-проверка токена авто-обновлением.
-
+# app.add_middleware(AutoRefreshMiddleware)     # 4. Авто-проверка токена авто-обновлением.
 
 for route, path in get_project_path_settings().static_mounts.items():
     app.mount(f"/{route}", StaticFiles(directory=path), name=route)
@@ -77,6 +192,7 @@ for route, path in get_project_path_settings().static_mounts.items():
 @app.get("/health", include_in_schema=False)
 def health():
     return {"status": "ok"}
+
 
 @app.get("/user/README.md", include_in_schema=False)
 async def readme():
@@ -90,11 +206,12 @@ async def readme_logo():
     return FileResponse(full_path)
 
 
-logger.info("Cоздаём приложение...")
+log_api.info("Cоздаём приложение...")
+
 
 # Подключаем роутеры
 async def configure_routers():
-    logger.info("Создаем экземпляры API...")
+    log_api.info("Создаем экземпляры API...")
 
     auth_api = AuthAPI()
     security_api = SecurityAPI()
@@ -104,8 +221,7 @@ async def configure_routers():
     background_api = BackgroundAPI()
     sse_api = StreemAPI()
 
-
-    logger.info("Инициализируем маршруты...")
+    log_api.info("Инициализируем маршруты...")
     await auth_api.initialize_routes()
     await security_api.initialize_routes()
     await profile_api.initialize_routes()
@@ -114,8 +230,7 @@ async def configure_routers():
     await background_api.initialize_routes()
     await sse_api.initialize_routes()
 
-
-    logger.info("Добавляем маршруты в приложение...")
+    log_api.info("Добавляем маршруты в приложение...")
     app.include_router(auth_api.router)
     app.include_router(security_api.router)
     app.include_router(profile_api.router)
@@ -126,9 +241,6 @@ async def configure_routers():
 
 
 if __name__ == "__main__":
-    import asyncio
-    import sys
-
     try:
         uvicorn.run(
             "run:app",
@@ -145,5 +257,6 @@ if __name__ == "__main__":
         print("🛑 Сервер остановлен пользователем (CTRL+C)")
         sys.exit(0)
     except Exception as e:
-        print(f"❌ Неизвестная ошибка: {e}")
+        # Здесь будет ясно, что ошибка — именно у API-части (процесс мониторинга логируется отдельно)
+        print(f"❌ Неизвестная ошибка API: {e}")
         sys.exit(1)
