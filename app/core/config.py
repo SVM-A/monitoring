@@ -25,11 +25,9 @@ class Settings(BaseSettings):
         env_file_encoding = "utf-8"
         extra = "ignore"
 
-
 class AppMetaSettings(Settings):
     TYPE_NETWORK: str = TypeNetwork.LOCAL
     TYPE_SERVER: str = TypeServer.DEVELOPMENT
-
 
 class CorsSettings(Settings):
     CORS_ALLOWED_ORIGINS: set[str] = {
@@ -47,15 +45,11 @@ class CorsSettings(Settings):
         r"SamsungBrowser/\d+\.\d+",
     ]
 
-
 class UrlsToServices(Settings):
     BASE_USER_API_URL: str
 
-
-
 class IPsToServices(Settings):
     BASE_USER_API_IP: str
-
 
 class ApiTokens(Settings):
     TOKEN_ACCESS_SECRET_KEY: SecretStr
@@ -63,7 +57,6 @@ class ApiTokens(Settings):
     TOKEN_STREAM_SECRET_KEY: SecretStr
     TOKEN_PEPPER_SECRET_KEY: SecretStr
     ALGORITHM: str = "HS256"
-
 
 class ProjectPathSettings(Settings):
     BASE_LOGS_PATH: Path = BASE_PATH / "logs"
@@ -85,7 +78,6 @@ class ProjectPathSettings(Settings):
         self.BASE_STATIC_PATH.mkdir(parents=True, exist_ok=True)
         self.BASE_PHOTO_PATH.mkdir(parents=True, exist_ok=True)
 
-
 class PstgrUserBaseSettings(Settings):
     USER_PSTGR_USER: str
     USER_PSTGR_PASS: SecretStr
@@ -101,7 +93,6 @@ class PstgrUserBaseSettings(Settings):
     def sync_user_pstgr_url(self) -> str:
         return f"postgresql://{self.USER_PSTGR_USER}:{self.USER_PSTGR_PASS.get_secret_value()}@{self.USER_PSTGR_HOST}:{self.USER_PSTGR_PORT}/{self.USER_PSTGR_NAME}"
 
-
 class RabbitMqSetting(Settings):
     RABBITMQ_USER: str
     RABBITMQ_PASS: SecretStr
@@ -111,7 +102,6 @@ class RabbitMqSetting(Settings):
     @property
     def rabbitmq_broker_url(self) -> str:
         return f"amqp://{self.RABBITMQ_USER}:{self.RABBITMQ_PASS.get_secret_value()}@{self.RABBITMQ_HOST}:{self.RABBITMQ_PORT}/"
-
 
 class RedisSetting(Settings):
     REDIS_HOST: str
@@ -123,8 +113,6 @@ class RedisSetting(Settings):
     @property
     def redis_ban_list_url(self) -> str:
         return f"redis://:{self.REDIS_PASS.get_secret_value()}@{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_BAN_LIST_INDEX}"
-
-
 
 class S3StorageConfig(Settings):
     MINIO_USER: str
@@ -138,11 +126,9 @@ class S3StorageConfig(Settings):
         super().__init__(**kwargs)
         self.BASE_PHOTO_PATH.mkdir(parents=True, exist_ok=True)
 
-
 class UserFlowerSettings(Settings):
     USER_FLOWER_LOGIN: str
     USER_FLOWER_PASSWORD: SecretStr
-
 
 class MailSenderConfig(Settings):
     MAIL_USERNAME: EmailStr
@@ -150,8 +136,32 @@ class MailSenderConfig(Settings):
     MAIL_SERVER: str
     MAIL_PORT: int
 
+class FalconEyeResiverSettings(Settings):
+    IP_ADDRESS: str = '192.168.1.20'
+    PORT_ADDRESS: int = 554
+    USERNAME_CAMERAS: str = 'admin'
+    PASSWORD_CAMERAS: str
 
-# Lazy обёртки
+    @property
+    def cam_stream(self, num_cam: int = 2, subtype: int = 0) -> str:
+        return f'rtsp://{self.USERNAME}:{self.PASSWORD}@{self.IP_ADRESS}:{self.PORT_ADRESS}/cam/realmonitor?channel={num_cam}&subtype={subtype}'
+
+
+class FalconEyeMainCameraSettings(Settings):
+    PORT_ADDRESS: int = 554
+    USERNAME_CAMERAS: str = 'admin'
+    PASSWORD_CAMERAS: str
+
+    @property
+    def main_cam_stream(self, mode: str = 'real', idc: int = 1, ids: int = 1) -> str:
+        return f"rtsp://{self.USERNAME}:{self.PASSWORD}@192.168.1.10:{self.PORT_ADRESS}/stream?mode={mode}&idc={idc}&ids={ids}"
+
+    @property
+    def second_cam_stream(self, mode: str = 'real', idc: int = 1, ids: int = 1) -> str:
+        return f"rtsp://{self.USERNAME}:{self.PASSWORD}@192.168.1.10:{self.PORT_ADRESS}/stream?mode={mode}&idc={idc}&ids={ids}"
+
+
+# Lazy обёртки{self.IP_ADDRESS}
 @lru_cache()
 def get_app_settings() -> AppMetaSettings:
     return AppMetaSettings()
