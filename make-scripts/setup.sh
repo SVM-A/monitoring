@@ -1,7 +1,7 @@
 #!/bin/bash
 
 export LANG="${LANG:-ru}"
-export TYPE_SERVER="${TYPE_SERVER:-dev}"
+export TYPE_NETWORK="${TYPE_NETWORK:-local}"
 NAME_PATH_APP="${NAME_PATH_APP}"
 PYTHON_VERSION="${PYTHON_VERSION}"
 
@@ -45,7 +45,7 @@ if ! command -v curl &> /dev/null; then
 fi
 
 # === Установка prod-режима через uv ===
-if [[ "$TYPE_SERVER" == "prod" ]]; then
+if [[ "$TYPE_NETWORK" == "server" ]]; then
   export PATH="$HOME/.cargo/bin:$PATH"
   # Установка uv
   if command -v uv &> /dev/null; then

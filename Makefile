@@ -472,8 +472,8 @@ add-docker-network:
 	@docker network inspect $(DOCKER_NETWORK) >/dev/null 2>&1 || \
 	docker network create \
 		--driver bridge \
-		--subnet=172.113.0.0/16 \
-		--gateway=172.113.0.1 \
+		--subnet=172.172.0.0/16 \
+		--gateway=172.172.0.1 \
 		--attachable \
 		$(DOCKER_NETWORK)
 

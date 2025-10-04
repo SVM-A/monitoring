@@ -1,0 +1,28 @@
+{
+  "cameras": {
+    "entry": {
+      "host": "192.168.100.149",
+      "port": 554,
+      "path": "stream",
+      "user_env": "CAM1_USER",
+      "pass_env": "CAM1_PASS",
+      "protocol": "rtsp",
+      "params": "mode=real&idc=1&ids=1",
+      "transport": "tcp"
+    },
+    "exit": {
+      "host": "192.168.100.141",
+      "port": 554,
+      "path": "stream",
+      "user_env": "CAM1_USER",
+      "pass_env": "CAM1_PASS",
+      "protocol": "rtsp",
+      "params": "mode=real&idc=1&ids=1",
+      "transport": "tcp"
+    },
+    "calclock": {
+      "type": "widget",
+      "widget": "calclock"
+    }
+  }
+}
