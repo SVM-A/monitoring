@@ -1,3 +1,5 @@
+# app/core/cam_configs/config_loader.py
+
 import os
 import json
 from typing import Dict, Any, Optional
