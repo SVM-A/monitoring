@@ -12,3 +12,5 @@ def handle_sighup(signum, frame):
 
 if hasattr(signal, "SIGHUP"):
     signal.signal(signal.SIGHUP, handle_sighup)
+
+

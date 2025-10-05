@@ -4,6 +4,7 @@ import cv2
 import time
 import argparse
 import queue
+import signal
 from typing import Dict, Optional, Tuple
 from threading import Event
 from multiprocessing import Process, Queue, Event as MPEvent
@@ -15,7 +16,7 @@ from app.proccesor.worker import processor_proc
 from app.ui.layout import compose_focus_layout
 from app.util.mask import mask_url
 from app.video.grabber import FrameGrabber
-from app.widgets.base import CalClockWidget
+from app.widgets.widgets import CalClockWidget
 
 
 def main(selected_cams):
@@ -65,10 +66,23 @@ def main(selected_cams):
 
     proc.start()
     print("Started processor process")
+    terminate = False
+
+    def _handle_term(signum, frame):
+        nonlocal terminate
+        terminate = True
+
+    signal.signal(signal.SIGINT, _handle_term)
+    signal.signal(signal.SIGTERM, _handle_term)
 
     # ---- UI loop ----
-    cv2.namedWindow("Monitor", cv2.WINDOW_NORMAL)
-    cv2.resizeWindow("Monitor", 1920, 1080)  # 16:9
+    WINDOW_NAME = "Monitor"
+    cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(WINDOW_NAME, 1920, 1080)
+
+    exit_requested = False  # ← добавить: флаг выхода по кнопке
+    ui_close_rect: tuple[int, int, int, int] = (0, 0, 0, 0)  # ← добавить: актуальный прямоугольник кнопки
+
     latest: Dict[str, Optional[np.ndarray]] = {cid: None for cid in CAM_SOURCES.keys()}
 
     # NEW: состояние фокуса и хит-тест-карта
@@ -78,16 +92,21 @@ def main(selected_cams):
 
     # NEW: callback мыши для клика по ячейке
     def on_mouse(event, x, y, flags, param):
-        nonlocal focus_id, last_rects
+        nonlocal focus_id, last_rects, exit_requested, ui_close_rect  # ← добавить новые nonlocal
         if event == cv2.EVENT_LBUTTONDOWN:
-            # найти, в какую прямоугольную область попали
-            for cid, (x0,y0,x1,y1) in last_rects.items():
+            # 1) Клик по кнопке "Закрыть"
+            x0, y0, x1, y1 = ui_close_rect
+            if x0 <= x <= x1 and y0 <= y <= y1:
+                exit_requested = True
+                return
+
+            # 2) Клик по ячейке камеры (как было)
+            for cid, (x0, y0, x1, y1) in last_rects.items():
                 if x0 <= x <= x1 and y0 <= y <= y1:
-                    # если повторный клик по уже выбранной камере — снять фокус
                     focus_id = None if focus_id == cid else (cid if CAM_SOURCES[cid].get("type") != "widget" else None)
                     break
 
-    cv2.setMouseCallback("Monitor", on_mouse)
+    cv2.setMouseCallback(WINDOW_NAME, on_mouse)
 
     try:
         while True:
@@ -107,12 +126,33 @@ def main(selected_cams):
                 out_size=(1920, 1080),
                 widget_size=(640, 360),
             )
-            cv2.imshow("Monitor", canvas)
+
+            # ↓↓↓ ДОБАВИТЬ: рисуем кнопку "Закрыть"
+            # h, w = canvas.shape[:2]
+            # ui_close_rect = (w - 150, 20, w - 20, 60)  # (x0, y0, x1, y1)
+            #
+            # # фон и рамка
+            # cv2.rectangle(canvas, (ui_close_rect[0], ui_close_rect[1]), (ui_close_rect[2], ui_close_rect[3]),
+            #               (40, 40, 50), thickness=-1)
+            # cv2.rectangle(canvas, (ui_close_rect[0], ui_close_rect[1]), (ui_close_rect[2], ui_close_rect[3]),
+            #               (90, 90, 100), thickness=1)
+
+
+
+            # ASCII-лейбл по центру (если нужен)
+            # label = "EXIT"  # <— кириллица не поддерживается в cv2.putText
+            # font = cv2.FONT_HERSHEY_SIMPLEX
+            # scale, thick = 0.6, 2
+            # (text_w, text_h), base = cv2.getTextSize(label, font, scale, thick)
+            # tx = ui_close_rect[0] + (ui_close_rect[2] - ui_close_rect[0] - text_w) // 2
+            # ty = ui_close_rect[1] + (ui_close_rect[3] - ui_close_rect[1] + text_h) // 2
+            # # cv2.putText(canvas, label, (tx, ty), font, scale, (230, 230, 230), thick, cv2.LINE_AA)
+
+            cv2.imshow(WINDOW_NAME, canvas)
 
             key = cv2.waitKey(1) & 0xFF
-            if key in (ord('q'), 27):  # q или ESC
+            if key in (ord('q'), 27):
                 break
-            # NEW: горячие клавиши для круга фокуса / сброса
             elif key == ord('0'):
                 focus_id = None
             elif key in (ord('['), ord(']')):
@@ -127,7 +167,15 @@ def main(selected_cams):
                             focus_id = rtsp_ids[(idx + 1) % len(rtsp_ids)]
                         else:
                             focus_id = rtsp_ids[(idx - 1) % len(rtsp_ids)]
+            # 2) закрытие по крестику системного окна
+            if cv2.getWindowProperty(WINDOW_NAME, cv2.WND_PROP_VISIBLE) < 1:
+                break
 
+            # 3) закрытие по кнопке в UI
+            if exit_requested:
+                break
+            if terminate:
+                break
             time.sleep(0.01)
 
     except KeyboardInterrupt:
