@@ -634,7 +634,8 @@ class WidgetBase(Thread):
             out.append((ic, txt, col))
         return out
 
-    def _pick_sky_icon(self, day_info: dict, now_dt: datetime) -> str | None:
+    @staticmethod
+    def _pick_sky_icon(day_info: dict, now_dt: datetime) -> str | None:
         """
         Возвращает ключ иконки 'sky_sun' или 'sky_night' для СУХОЙ погоды.
         Для дождя/снега — None (фон не ставим, чтобы не перегружать).
