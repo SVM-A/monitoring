@@ -12,12 +12,12 @@ from app.proccesor.worker import processor_proc
 from app.util.mask import mask_url
 from app.video.grabber import FrameGrabber
 
-# новый запуск Qt-приложения
+# запуск Qt-приложения
 from app.qt.app import run_qt_app
 
 
 def main(selected_cams):
-    # 1) БД как раньше
+    # 1) БД
     conn = init_db(DB_PATH)
     conn.close()
 
@@ -74,7 +74,7 @@ def main(selected_cams):
             grabbers.append(g)
             print(f"Grabber started for {cam_id} -> {mask_url(src)}")
 
-    # 4) Процесс-обработчик (как раньше)
+    # 4) Процесс-обработчик
     proc = Process(
         target=processor_proc,
         args=(frame_queue, stop_event_proc, DB_PATH, GLOBAL_ROI),
