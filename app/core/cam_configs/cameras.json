@@ -11,7 +11,7 @@
       "transport": "tcp"
     },
     "exit": {
-      "host": "192.168.100.141",
+      "host": "192.168.100.37",
       "port": 554,
       "path": "stream",
       "user_env": "CAM1_USER",
@@ -20,9 +20,9 @@
       "params": "mode=real&idc=1&ids=1",
       "transport": "tcp"
     },
-    "calclock": {
+    "calclockweather": {
       "type": "widget",
-      "widget": "calclock"
+      "widget": "calclockweather"
     }
   }
 }

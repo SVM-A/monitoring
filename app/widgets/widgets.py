@@ -55,3 +55,12 @@ class CalClockWidget(WidgetBase):
 
     def run(self) -> None:
         self.run_loop(lambda: self.render_calendar_plus_clock(), tick_seconds=1.0)
+
+
+class CaClockWeatherWidget(WidgetBase):
+    """Комбинированная панель: 4 недели календаря (Пн-Вс) с погодой + часы + подробная погода на сегодня."""
+    def run(self) -> None:
+        self.run_loop(lambda: self.render_calendar_clock_weather_4w(W=1920, H=1080), tick_seconds=1.0)
+
+
+

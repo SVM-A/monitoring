@@ -1,0 +1,36 @@
+/* styles.qss — минималистичный тёмный стиль */
+* {
+  font-family: "DejaVu Sans", "Segoe UI", "Inter", sans-serif;
+}
+
+QMainWindow, QWidget {
+  background: #121216;
+  color: #E6E6E6;
+}
+
+QStatusBar {
+  background: #15161A;
+  color: #C8C8FF;
+}
+
+QToolTip {
+  background: #1C1D22;
+  color: #E6E6E6;
+  border: 1px solid #2A2B31;
+  padding: 6px 8px;
+  border-radius: 6px;
+}
+
+QScrollBar:vertical {
+  background: #16181E;
+  width: 10px;
+  margin: 0;
+}
+QScrollBar::handle:vertical {
+  background: #2B2E37;
+  min-height: 30px;
+  border-radius: 5px;
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+  height: 0; /* без кнопок */
+}
