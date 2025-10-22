@@ -5,15 +5,11 @@ from functools import lru_cache
 from typing import Optional
 from pathlib import Path
 from io import BytesIO
+import cairosvg
 
 from PIL import Image
 from .design_system import DS
 
-# опциональный SVG-рендер на лету
-try:
-    import cairosvg  # pip install cairosvg
-except Exception:
-    cairosvg = None
 
 # Базовое соответствие ключ -> файл (в папке app/ui/icons)
 _ICON_MAP = {
@@ -41,6 +37,8 @@ _ICON_MAP = {
     "temperature-low": "temperature-low.svg",
     "temperature-snow": "temperature-snow.svg",
     "temperature-sun": "temperature-sun.svg",
+    "sky-night": "sky-night.svg",
+    "sky-sun": "sky-sun.svg",
 }
 
 # Алиасы: привычные короткие имена -> реальные ключи из _ICON_MAP
@@ -50,6 +48,8 @@ _ALIASES = {
     "wind": "windy",
     "dry": "cloudy",
     "sun": "day-sunny",
+    "sky_night": "sky-night",
+    "sky_sun": "sky-sun",
 }
 def _resolve_icon_key(name: str) -> Optional[str]:
     if not name:
@@ -57,6 +57,16 @@ def _resolve_icon_key(name: str) -> Optional[str]:
     n = name.strip().lower()
     k = _ALIASES.get(n, n)
     return k if k in _ICON_MAP else None
+
+def _render_svg_to_rgba(svg_path: str, size: int) -> Image.Image:
+    png_bytes = cairosvg.svg2png(
+        url=svg_path,
+        output_width=size,
+        output_height=size,
+        background_color='transparent'  # <<< ключевая строка
+    )
+    im = Image.open(BytesIO(png_bytes)).convert('RGBA')
+    return im
 
 @lru_cache()
 def get_icon(name: str, size: int = 18) -> Optional[Image.Image]:

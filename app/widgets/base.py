@@ -96,9 +96,9 @@ class WidgetBase(Thread):
                 frame = render_fn()
                 if frame is not None:
                     self.push_frame(frame)
-            except Exception:
+            except Exception as e:
                 # мягко переживаем исключения внутри рендера
-                pass
+                print("render error:", repr(e))
             finally:
                 time.sleep(max(0.0, float(tick_seconds)))
 
@@ -196,17 +196,36 @@ class WidgetBase(Thread):
             else:
                 cursor_x += cell_w
 
-    def draw_analog_clock(self, W: int, H: int, now: datetime) -> Image.Image:
-        """Рисует квадратный циферблат в прямоугольнике WxH и возвращает PIL.Image."""
+    def draw_analog_clock(self, W: int, H: int, now: datetime,
+                          sky_icon_key: str | None = None) -> Image.Image:
         kind = self.today_kind(now.date())
         face_fill = CLOCK_NORMAL if kind == "normal" else (CLOCK_WEEKEND if kind == "weekend" else CLOCK_HOLIDAY)
         S = min(W, H)
         cx, cy = S // 2, S // 2
         r = int(S * 0.42)
+
         im = Image.new("RGB", (W, H), COLOR_BG)
         d = ImageDraw.Draw(im)
-        # фон
+
+        # фон круга
         d.ellipse([cx - r, cy - r, cx + r, cy + r], outline=(100, 100, 110), width=4, fill=face_fill)
+
+        # ----- ФОН-НЕБО (по желанию) -----
+        if sky_icon_key:
+            # «диаметр между цифрами»: цифры стоят на радиусе r-30 => диаметр = 2*(r-30)
+            inner_d = max(10, 2 * (r - 30))
+            sky_icon = get_icon(sky_icon_key, size=inner_d)
+            sky_icon = self._circle_clip(sky_icon, inner_d)
+            if sky_icon is not None:
+                # чуть приглушим, чтобы не спорила с метками
+                sky_icon = sky_icon.copy()
+                try:
+                    alpha = sky_icon.getchannel('A')
+                    sky_icon.putalpha(alpha.point(lambda a: min(a, 170)))
+                except Exception:
+                    pass
+                self._paste_icon(im, sky_icon, cx - inner_d // 2, cy - inner_d // 2)
+
         # риски
         for i in range(60):
             angle = (i / 60.0) * 2.0 * math.pi
@@ -215,21 +234,18 @@ class WidgetBase(Thread):
             inner = (cx + int((r - inner_len) * math.sin(angle)), cy - int((r - inner_len) * math.cos(angle)))
             d.line([inner, outer], fill=(170, 170, 180) if i % 5 == 0 else (110, 110, 120),
                    width=2 if i % 5 == 0 else 1)
-        # цифры
+
+        # цифры — уже были крупнее и со stroke, оставляем
         for n in range(1, 13):
             angle = (n / 12.0) * 2.0 * math.pi
             tx = cx + int((r - 30) * math.sin(angle))
             ty = cy - int((r - 30) * math.cos(angle))
             text = str(n)
-            tw = d.textlength(text, font=FONT32)  # было FONT24
+            tw = d.textlength(text, font=FONT32)
             th = 32
-            d.text(
-                (tx - tw / 2, ty - th / 2),
-                text,
-                fill=COLOR_TEXT,
-                font=FONT32,  # ↑ крупнее
-                stroke_width=2, stroke_fill=(0, 0, 0)  # чёткая обводка
-            )
+            d.text((tx - tw / 2, ty - th / 2), text, fill=COLOR_TEXT, font=FONT32,
+                   stroke_width=2, stroke_fill=(0, 0, 0))
+
         # стрелки
         sec = now.second + now.microsecond / 1e6
         minu = now.minute + sec / 60.0
@@ -405,6 +421,7 @@ class WidgetBase(Thread):
                         (tx, ty), t_str, fill=fill_col, font=tfont,
                         stroke_width=2, stroke_fill=(0, 0, 0)  # чёткая чёрная обводка
                     )
+
                 # === ПОГОДНЫЕ “ЧИПЫ” СНИЗУ (перенос по строкам, снизу-вверх)
                 bottom_pad = 16  # было 10 — теперь не прилипает
                 icon_sz = DS.calendar.weather_icon + 4  # иконки крупнее
@@ -456,58 +473,6 @@ class WidgetBase(Thread):
                 # следующий день
                 cur += timedelta(days=1)
 
-    def _clock_text_color_for_day(self, day: date) -> tuple[int, int, int]:
-        kind = self.today_kind(day)
-        if kind == "holiday":
-            return (255, 160, 150)  # светло-красный
-        if kind == "weekend":
-            return (160, 160, 170)  # тёмно-серый
-        return (255, 215, 100)  # жёлтый для будней
-
-    def _paste_icon(self, im, icon, x, y):
-        """Аккуратно накладывает RGBA-иконку поверх RGB-карты."""
-        if icon is None:
-            return (0, 0)
-        w, h = icon.size
-        im.paste(icon, (int(x), int(y)), mask=icon)
-        return (w, h)
-
-
-    def _temp_to_color(self, t: float | None) -> tuple[int, int, int]:
-        """
-        Подбор цвета температуры: холод — холодные тона, тепло — тёплые.
-        Диапазоны можно подстроить по вкусу.
-        """
-        if t is None:
-            return COLOR_TEMP  # дефолт
-        v = float(t)
-        # пороги (°C): < -15, -15..0, 0..10, 10..20, 20..30, >=30
-        if v < -15:   return (140, 180, 255)  # ледяной голубой
-        if v < 0:     return (160, 200, 255)  # холодный голубой
-        if v < 10:    return (210, 230, 255)  # прохладный
-        if v < 20:    return (255, 230, 170)  # тёплый мягкий
-        if v < 30:    return (255, 200, 120)  # тёплый
-        return (255, 160, 90)  # жарко
-
-    def four_week_window(self, today: date) -> tuple[date, date]:
-        """
-        Старт: (today - 7 дней), но выровненный на ПОНЕДЕЛЬНИК.
-        Продолжительность: ровно 28 дней (4 недели, Пн-Вс).
-        """
-        raw_start = today - timedelta(days=7)
-        monday_offset = raw_start.weekday()  # Mon=0...Sun=6
-        start = raw_start - timedelta(days=monday_offset)
-        end = start + timedelta(days=27)
-        return start, end
-
-    def _measure_icon_chip(self, draw, icon_name: str, text: str | None, font) -> int:
-        """Оценка ширины чипа без отрисовки (иконка + отступ + текст)."""
-        icon_sz = DS.calendar.weather_icon
-        w = icon_sz  # сама иконка
-        if text:
-            w += 6 + int(draw.textlength(text, font=font))
-        return int(w)
-
     def _draw_badge(self, draw: ImageDraw.ImageDraw, im: Image.Image,
                     x: int, y: int, text: str, font: ImageFont.FreeTypeFont,
                     color_text: tuple[int,int,int], pad_h: int = 2, pad_w: int = 6,
@@ -558,6 +523,148 @@ class WidgetBase(Thread):
             draw.text((ix, ty), text, fill=fill_rgb, font=font)
             w = (ix - x) + draw.textlength(text, font=font)
         return int(w)
+    def _clock_text_color_for_day(self, day: date) -> tuple[int, int, int]:
+        kind = self.today_kind(day)
+        if kind == "holiday":
+            return (255, 160, 150)  # светло-красный
+        if kind == "weekend":
+            return (160, 160, 170)  # тёмно-серый
+        return (255, 215, 100)  # жёлтый для будней
+
+    @staticmethod
+    def _paste_icon(im: Image.Image, icon: Image.Image, x: int, y: int):
+        # canvas может быть RGB — это нормально: paste с mask воспримет альфу из канала A
+        if icon.mode != 'RGBA':
+            icon = icon.convert('RGBA')
+        im.paste(icon, (x, y), icon)
+
+    @staticmethod
+    def _circle_clip(im: Image.Image, diameter: int) -> Image.Image:
+        im = im.convert('RGBA')
+        mask = Image.new('L', (diameter, diameter), 0)
+        d = ImageDraw.Draw(mask)
+        d.ellipse([0, 0, diameter - 1, diameter - 1], fill=255)
+        out = Image.new('RGBA', (diameter, diameter), (0, 0, 0, 0))
+        out.paste(im.resize((diameter, diameter), Image.LANCZOS), (0, 0), mask)
+        return out
+
+    @staticmethod
+    def _temp_to_color(t: float | None) -> tuple[int, int, int]:
+        """
+        Подбор цвета температуры: холод — холодные тона, тепло — тёплые.
+        Диапазоны можно подстроить по вкусу.
+        """
+        if t is None:
+            return COLOR_TEMP  # дефолт
+        v = float(t)
+        # пороги (°C): < -15, -15..0, 0..10, 10..20, 20..30, >=30
+        if v < -15:   return (140, 180, 255)  # ледяной голубой
+        if v < 0:     return (160, 200, 255)  # холодный голубой
+        if v < 10:    return (210, 230, 255)  # прохладный
+        if v < 20:    return (255, 230, 170)  # тёплый мягкий
+        if v < 30:    return (255, 200, 120)  # тёплый
+        return (255, 160, 90)  # жарко
+
+    @staticmethod
+    def four_week_window(today: date) -> tuple[date, date]:
+        """
+        Старт: (today - 7 дней), но выровненный на ПОНЕДЕЛЬНИК.
+        Продолжительность: ровно 28 дней (4 недели, Пн-Вс).
+        """
+        raw_start = today - timedelta(days=7)
+        monday_offset = raw_start.weekday()  # Mon=0...Sun=6
+        start = raw_start - timedelta(days=monday_offset)
+        end = start + timedelta(days=27)
+        return start, end
+
+    @staticmethod
+    def _measure_icon_chip(draw, icon_name: str, text: str | None, font) -> int:
+        """Оценка ширины чипа без отрисовки (иконка + отступ + текст)."""
+        icon_sz = DS.calendar.weather_icon
+        w = icon_sz  # сама иконка
+        if text:
+            w += 6 + int(draw.textlength(text, font=font))
+        return int(w)
+
+    @staticmethod
+    def _collect_anomalies(day_info: dict) -> list[tuple[str, str, tuple[int, int, int]]]:
+        """
+        Возвращает список [(icon_key, label, color)] для правой полуячейки «Погода сегодня».
+        Логика простая и объяснимая, без внешних зависимостей.
+        """
+        items: list[tuple[str, str, tuple[int, int, int]]] = []
+        tmax = day_info.get("tmax")
+        tmin = day_info.get("tmin")
+        rain = day_info.get("rain_mm")
+        wind = day_info.get("wind_ms")
+
+        # 1) Сильный ветер
+        if wind is not None and float(wind) >= WIND_ALERT_MS:
+            items.append(("wind", "Сильный ветер", BADGE_WIND))
+
+        # 2) Много осадков
+        if rain is not None and float(rain) >= RAIN_ALERT_MM:
+            items.append(("rain_heavy", "Много осадков", BADGE_RAIN_HIGH))
+
+        # 3) Снегопад (есть осадки и максимум ≤ 0°C)
+        if (rain is not None and float(rain) > 0) and (tmax is not None and float(tmax) <= 0.0):
+            items.append(("snow", "Снегопад", BADGE_TEXT))
+
+        # 4) Жара (tmax ≥ 30°C)
+        if tmax is not None and float(tmax) >= 30.0:
+            items.append(("temperature-sun", "Жара", (255, 170, 80)))
+
+        # 5) Мороз (tmin ≤ −15°C)
+        if tmin is not None and float(tmin) <= -15.0:
+            items.append(("temperature-snow", "Мороз", (170, 200, 255)))
+
+        # 6) Гололёд возможен (осадки при отрицательных температурах)
+        if (rain is not None and float(rain) > 0) and (
+                (tmin is not None and float(tmin) <= 0.0) or (tmax is not None and float(tmax) <= 0.0)
+        ):
+            items.append(("cloud-sleet", "Гололёд возможно", (200, 200, 230)))
+
+        # dedup по подписи: оставим самые «жёсткие» первые
+        seen = set()
+        out = []
+        for ic, txt, col in items:
+            if txt in seen:
+                continue
+            seen.add(txt)
+            out.append((ic, txt, col))
+        return out
+
+    def _pick_sky_icon(self, day_info: dict, now_dt: datetime) -> str | None:
+        """
+        Возвращает ключ иконки 'sky_sun' или 'sky_night' для СУХОЙ погоды.
+        Для дождя/снега — None (фон не ставим, чтобы не перегружать).
+        """
+        rain = day_info.get("rain_mm")
+        if rain is not None:
+            try:
+                rv = float(rain)
+            except Exception:
+                rv = None
+            # если есть осадки — фоновую «небо»-иконку не рисуем
+            if rv is not None and rv > 0.0:
+                return None
+
+        sr_s = day_info.get("sunrise")
+        ss_s = day_info.get("sunset")
+        if not sr_s or not ss_s:
+            # нет данных — по умолчанию день
+            return "sky_sun"
+
+        try:
+            # строки от Open-Meteo уже в локальном tz, просто парсим
+            sr = datetime.strptime(sr_s, "%Y-%m-%dT%H:%M")
+            ss = datetime.strptime(ss_s, "%Y-%m-%dT%H:%M")
+        except Exception:
+            return "sky_sun"
+
+        # ночь: до восхода или после заката
+        is_night = (now_dt < sr) or (now_dt > ss)
+        return "sky_night" if is_night else "sky_sun"
 
     # ---------------------- Композиции-панели ----------------------
 
@@ -679,6 +786,7 @@ class WidgetBase(Thread):
             weather = self.fetch_weather_daily_cached()
         except Exception:
             weather = {}
+        wx_today = weather.get(today) or {}
 
         # Подготовим окно дат
         start, end = self.four_week_window(today)
@@ -701,9 +809,12 @@ class WidgetBase(Thread):
         right_y = 30
         right_h = H - 60
 
-        # 1) квадратный циферблат, центрируем по ширине
-        clock_size = min(right_w, right_h - 260)  # оставляем запас под время/дату и "Погода сегодня"
-        clock_pil = self.draw_analog_clock(clock_size, clock_size, now)
+
+        sky_icon_key = self._pick_sky_icon(wx_today, now)
+
+        # 1) квадратный циферблат
+        clock_size = min(right_w, right_h - 260)
+        clock_pil = self.draw_analog_clock(clock_size, clock_size, now, sky_icon_key=sky_icon_key)
         clock_x = right_x + (right_w - clock_size) // 2
         clock_y = right_y
         im.paste(clock_pil, (clock_x, clock_y))
@@ -732,102 +843,127 @@ class WidgetBase(Thread):
         draw.rounded_rectangle([right_x, box_y, right_x + right_w, box_y + box_h],
                                radius=DS.radii.md, fill=DS.color.panel)
 
-        wx_today = weather.get(today) or {}
-        line_x = right_x + 14
-        line_y = box_y + 12
-        maxw = right_w - 28
+        pad = 16
+        inner_x = right_x + pad
+        inner_y = box_y + pad
+        inner_w = right_w - pad * 2
+        inner_h = box_h - pad * 2
 
-        # Заголовок
-        draw.text((line_x, line_y), "Погода сегодня", fill=COLOR_SUB, font=FONT32)
-        line_y += FONT32.size + 8
+        # Заголовок (по центру)
+        title = "Погода сегодня"
+        tw = draw.textlength(title, font=FONT32)
+        draw.text((inner_x + (inner_w - tw) / 2, inner_y), title, fill=COLOR_SUB, font=FONT32)
+        inner_y += FONT32.size + 10
 
-        # Температура — как строка, крупно, с обводкой и «тепло/холод» цветом
-        tmax = wx_today.get("tmax");
+        # === Вертикально делим пополам: слева погода, справа аномалии ===
+        gap = 12
+        left_w = (inner_w - gap) // 2
+        right_w_half = inner_w - left_w - gap
+        left_x = inner_x
+        right_x_half = inner_x + left_w + gap
+        content_top = inner_y
+
+        # ---------- ЛЕВАЯ: температура + (иконка неба — тонкая черта — ветер) + флаги ----------
+        lx, ly, lw = left_x, content_top, left_w
+
+        # Температура
+        tmax = wx_today.get("tmax")
         tmin = wx_today.get("tmin")
         if (tmax is not None) or (tmin is not None):
-            t_str = []
-            if tmax is not None: t_str.append(f"↑{int(round(tmax))}°C")
-            if tmin is not None: t_str.append(f"↓{int(round(tmin))}°C")
-            t_str = " / ".join(t_str) if t_str else "—"
-            tfont = FONT32
-            fill_col = self._temp_to_color(((tmax or 0) + (tmin or 0)) / 2 if (tmax is not None and tmin is not None)
-                                           else (tmax if tmax is not None else tmin))
-            tw = draw.textlength(t_str, font=tfont)
-            tx = line_x
-            draw.text((tx, line_y), t_str, fill=fill_col, font=tfont, stroke_width=2, stroke_fill=(0, 0, 0))
-            line_y += tfont.size + 10
+            t_str_parts = []
+            if tmax is not None: t_str_parts.append(f"↑{int(round(tmax))}°C")
+            if tmin is not None: t_str_parts.append(f"↓{int(round(tmin))}°C")
+            t_str = " / ".join(t_str_parts) if t_str_parts else "—"
+            tfont_big = FONT40
+            t_col = self._temp_to_color(((tmax or 0) + (tmin or 0)) / 2 if (tmax is not None and tmin is not None)
+                                        else (tmax if tmax is not None else tmin))
+            draw.text((lx, ly), t_str, fill=t_col, font=tfont_big, stroke_width=3, stroke_fill=(0, 0, 0))
+            ly += tfont_big.size + 10
 
-        # Чипы: осадки и ветер — SVG-иконки, перенос по строкам при нехватке ширины
-        chips = []
-        rain = wx_today.get("rain_mm")
-        if rain is not None:
-            rv = float(rain)
-            if rv >= RAIN_ALERT_MM:
-                chips.append(("rain_heavy", f"{int(round(rv))} мм", BADGE_RAIN_HIGH))
-            elif rv > 0.0:
-                chips.append(("rain", f"{int(round(rv))} мм", BADGE_RAIN))
-            else:
-                chips.append(("dry", None, BADGE_TEXT))
-
+        # Единая строка: [иконка неба] — [тонкая черта] — [ветер]
+        wfont = FONT40
         wind = wx_today.get("wind_ms")
+        rain = wx_today.get("rain_mm")
+
+        # иконка неба
+        ix = lx
+        iy = ly
+
+        # сила ветра
         if wind is not None:
-            chips.append(("wind", f"{int(round(wind))} м/с", BADGE_WIND))
+            wval = f"{int(round(wind))} м/с"
+            w_col = BADGE_WIND if float(wind) >= WIND_ALERT_MS else BADGE_TEXT
+            draw.text((ix, iy), wval, fill=w_col, font=wfont, stroke_width=3, stroke_fill=(0, 0, 0))
+        ly += wfont.size + 12
 
-        chip_font = FONT22
-        icon_sz = DS.calendar.weather_icon + 6  # чуть крупнее, чем в ячейках
-        row_gap = 10
-        x_cursor = line_x
-        y_cursor = line_y
-        cur_w = 0
 
-        # перенос по строкам
-        rows = [[]]
-        for icon_key, txt, col in chips:
-            need = self._measure_icon_chip(draw, icon_key, txt, chip_font)
-            if rows[-1] and (cur_w + need > maxw):
-                rows.append([(icon_key, txt, col)])
-                cur_w = need + DS.calendar.weather_gap
-            else:
-                rows[-1].append((icon_key, txt, col))
-                cur_w += need + DS.calendar.weather_gap
 
-        # отрисовка строк
-        for row in rows:
-            x_cursor = line_x
-            for (icon_key, txt, col) in row:
-                used = self._draw_icon_chip(im, draw, x_cursor, y_cursor, icon_key, txt, chip_font, col)
-                x_cursor += used + DS.calendar.weather_gap
-            y_cursor += icon_sz + row_gap
+        # Полноширинный разделитель по всей ячейке «Погода сегодня» (исправлено: 90 вместо 'ninety')
+        draw.line([inner_x, ly, inner_x + inner_w, ly], fill=(80, 80, 90), width=1)
+        ly += 10
 
-        # Аномальные условия — внизу блока
-        if rain is not None and float(rain) >= RAIN_ALERT_MM:
-            draw.text((line_x, y_cursor + 4), "⚠ Много осадков", fill=BADGE_RAIN_HIGH, font=FONT18)
-            y_cursor += FONT18.size + 4
-        if wind is not None and float(wind) >= WIND_ALERT_MS:
-            draw.text((line_x, y_cursor + 2), "⚠ Сильный ветер", fill=BADGE_WIND, font=FONT18)
-
-        # ----- Баннер "Флаги" под календарём (левая колонка, низ) -----
-        today = now.date()
+        # Флаги под чертой (без отдельной подложки, в цвет ячейки)
         upcoming = self.upcoming_holidays(today, horizon_days=14)
-        banner_h = 92
-        banner_x = left_x
-        banner_y = left_y + left_h - banner_h
-        banner_w = left_w
-        draw.rectangle([banner_x, banner_y, banner_x + banner_w, banner_y + banner_h],
-                       fill=(24, 24, 28))
-
         if upcoming:
-            draw.text((banner_x + 10, banner_y + 8), "Флаги должны висеть:", fill=COLOR_ALERT, font=FONT24)
+            draw.text((lx, ly), "Флаги должны висеть:", fill=COLOR_ALERT, font=FONT24)
+            ly += FONT24.size + 6
             lines = [f"{d.strftime('%d.%m')} — {name}" for d, name in upcoming]
-            # выведем в две строки максимум, остальное не влезет — ок
-            y_line = banner_y + 40
-            maxw = banner_w - 20
-            text = "   ".join(lines)
-            draw_wrapped_text(draw, (banner_x + 10, y_line), text, max_width=maxw, line_height=26, font=FONT18)
+            y_ptr = ly
+            y_ptr = draw_wrapped_text(draw, (lx, y_ptr), "   ".join(lines),
+                                      max_width=lw, line_height=26, font=FONT18)
+            left_bottom_y = y_ptr
         else:
-            draw.text((banner_x + 10, banner_y + 8),
-                      "В ближайшие 14 дней флаги вешать не надо.",
-                      fill=COLOR_OK, font=FONT24)
+            draw.text((lx, ly), "В ближайшие 14 дней флаги вешать не надо", fill=COLOR_OK, font=FONT24)
+            left_bottom_y = ly + FONT24.size
+
+        # ---------- ПРАВАЯ: аномалии (с отступами, крупнее, центр и перенос по словам) ----------
+        rx, ry, rw = right_x_half, content_top, right_w_half
+        anoms = self._collect_anomalies(wx_today)
+
+        # Паддинги внутри правой полу-ячейки
+        a_pad_x = 16
+        a_pad_top = 10
+        a_pad_between = 14  # зазор между карточками аномалий
+
+        # Увеличенные размеры (FONT48 и FONT28 уже есть в проекте)
+        a_icon_sz = FONT48.size
+        lab_font = FONT28
+
+        # Вспомогательная функция: перенос по словам и центр каждой строки
+        def _draw_center_wrapped(text: str, top_y: int, color: tuple[int, int, int]) -> int:
+            max_w = rw - 2 * a_pad_x
+            words = text.split()
+            lines, cur = [], ""
+            for w_ in words:
+                test = (cur + " " + w_).strip()
+                if draw.textlength(test, font=lab_font) <= max_w:
+                    cur = test
+                else:
+                    if cur:
+                        lines.append(cur)
+                    cur = w_
+            if cur:
+                lines.append(cur)
+            y_ptr_local = top_y
+            for ln in lines:
+                tw = draw.textlength(ln, font=lab_font)
+                lx_c = rx + (rw - tw) / 2
+                draw.text((lx_c, y_ptr_local), ln, fill=color, font=lab_font,
+                          stroke_width=2, stroke_fill=(0, 0, 0))
+                y_ptr_local += lab_font.size + 4
+            return y_ptr_local
+
+        if anoms:
+            y_ptr = ry + a_pad_top
+            for (icon_key, label, col) in anoms:
+                icon = get_icon(icon_key, size=a_icon_sz)
+                if icon is not None:
+                    im.paste(icon, (rx + (rw - a_icon_sz) // 2, y_ptr), mask=icon)
+                y_ptr += a_icon_sz + 6
+                y_ptr = _draw_center_wrapped(label, y_ptr, col)
+                y_ptr += a_pad_between
+        else:
+            _ = _draw_center_wrapped("Погодных аномалий нет", ry + a_pad_top, (180, 180, 190))
 
         return cv2.cvtColor(np.asarray(im), cv2.COLOR_RGB2BGR)
 
@@ -837,34 +973,30 @@ class WidgetBase(Thread):
 
     # ---------------------- Погода (Open-Meteo) ----------------------
     def fetch_weather_daily_cached(
-        self,
-        lat: float = WEATHER_LAT,
-        lon: float = WEATHER_LON,
-        tz: str = WEATHER_TZ,
-        ttl: float = 1800.0,   # 30 минут
-        timeout: float = 6.0
+            self,
+            lat: float = WEATHER_LAT,
+            lon: float = WEATHER_LON,
+            tz: str = WEATHER_TZ,
+            ttl: float = 1800.0,
+            timeout: float = 6.0
     ) -> dict:
-        """
-        Возвращает словарь с дневными данными:
-        date -> {tmax, tmin, rain_mm, wind_max_ms}
-        Диапазон: прошлые 7 дней + ближайшие 16 дней (ограничение API).
-        Этого достаточно, чтобы закрыть окно ~4 недель (Пн-Вс).
-        """
-        # Open-Meteo: daily + past_days + forecast_days
         url = (
             "https://api.open-meteo.com/v1/forecast"
             f"?latitude={lat}&longitude={lon}"
-            "&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,windspeed_10m_max"
+            "&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,windspeed_10m_max,sunrise,sunset"
+            "&windspeed_unit=ms"
             "&past_days=7&forecast_days=16"
             f"&timezone={tz}"
         )
         data = self.fetch_json_cached(url, ttl=ttl, timeout=timeout) or {}
         daily = data.get("daily") or {}
         dates = daily.get("time") or []
-        tmax  = daily.get("temperature_2m_max") or []
-        tmin  = daily.get("temperature_2m_min") or []
-        rain  = daily.get("precipitation_sum") or []
-        wind  = daily.get("windspeed_10m_max") or []
+        tmax = daily.get("temperature_2m_max") or []
+        tmin = daily.get("temperature_2m_min") or []
+        rain = daily.get("precipitation_sum") or []
+        wind = daily.get("windspeed_10m_max") or []
+        sunrise = daily.get("sunrise") or []
+        sunset = daily.get("sunset") or []
 
         by_date: dict[date, dict] = {}
         for i, ds in enumerate(dates):
@@ -875,8 +1007,12 @@ class WidgetBase(Thread):
                     "tmin": tmin[i] if i < len(tmin) else None,
                     "rain_mm": rain[i] if i < len(rain) else None,
                     "wind_ms": wind[i] if i < len(wind) else None,
+                    # сохраняем ISO-строки локального времени (уже в tz)
+                    "sunrise": sunrise[i] if i < len(sunrise) else None,
+                    "sunset": sunset[i] if i < len(sunset) else None,
                 }
             except Exception:
                 continue
         return by_date
+
 
