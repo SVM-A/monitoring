@@ -43,14 +43,35 @@ _ICON_MAP = {
 
 # Алиасы: привычные короткие имена -> реальные ключи из _ICON_MAP
 _ALIASES = {
+    # прежнее
     "rain_heavy": "rain-heavy",
     "heavy_rain": "rain-heavy",
+    "light_rain": "light-rain",
     "wind": "windy",
+    "strong_wind": "strong-wind-2",
     "dry": "cloudy",
     "sun": "day-sunny",
     "sky_night": "sky-night",
     "sky_sun": "sky-sun",
+
+    # осадки / состояния
+    "snow": "snow",
+    "sleet": "cloud-sleet",
+    "rain_snow": "rain-snow",
+    "thunder": "rain-thunder",
+    "rain_thunder": "rain-thunder",
+    "drizzle": "drizzle",
+    "hail": "hail",
+
+    # облачность/небо
+    "cloudy": "cloudy",
+    "overcast": "overcast",
+    "partly_cloudy": "partly-cloudy",
+    "mostly_cloudy": "mostly-cloudy",
+    "storm": "storm",
+    "sunny": "day-sunny",
 }
+
 def _resolve_icon_key(name: str) -> Optional[str]:
     if not name:
         return None

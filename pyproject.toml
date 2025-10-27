@@ -25,6 +25,7 @@ dependencies = [
     "requests>=2.32.5",
     "PyQt6>=6.9.1",
     "cairosvg>=2.8.2",
+    "onvif-zeep>=0.2.12"
 ]
 
 [project.optional-dependencies]

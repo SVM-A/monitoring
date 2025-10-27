@@ -3,8 +3,7 @@
 from enum import Enum
 from functools import lru_cache
 from pathlib import Path
-from typing import Optional, Literal, List
-from urllib.parse import quote
+from typing import List
 
 
 from pydantic import EmailStr, SecretStr, IPvAnyAddress, Field
@@ -163,12 +162,49 @@ class MailSenderConfig(Settings):
     MAIL_SERVER: str
     MAIL_PORT: int
 
+class DebugFlags(Settings):
+    """
+    Флаги отладки. Удобно включать/выключать через .env:
+      ONVIF_DEBUG=true/false
+      FFPROXY_DEBUG=true/false
+      GRABBER_DEBUG=true/false
+      UI_DEBUG=true/false
+    """
+    ONVIF_DEBUG: bool = False      # печать HTTP/Soap сниппетов для ONVIF
+    FFPROXY_DEBUG: bool = False    # печать stderr ffmpeg и причины таймаутов
+    GRABBER_DEBUG: bool = False    # подробные логи граббера (кадры/переключения)
+    UI_DEBUG: bool = False         # будущие отладочные метки UI
+
+
+class VideoTuning(Settings):
+    """
+    Технические параметры для видео-подсистемы (прокси и т.п.)
+    Можно править в .env, например:
+      FFPROXY_LISTEN_TIMEOUT_S=12
+      FFPROXY_BASE_PORT=8554
+    """
+    FFPROXY_LISTEN_TIMEOUT_S: float = 12.0   # сколько ждать поднятия RTSP-листенера
+    FFPROXY_BASE_PORT: int = 8554            # базовый порт для RTSP-прокси
+
+
+class OnvifSettings(Settings):
+    ONVIF_ENABLE: bool = True   # по умолчанию ONVIF включен
+
+@lru_cache()
+def get_onvif_settings() -> OnvifSettings:
+    return OnvifSettings()
+
+@lru_cache()
+def get_debug_flags() -> DebugFlags:
+    return DebugFlags()
+
+@lru_cache()
+def get_video_tuning() -> VideoTuning:
+    return VideoTuning()
 
 @lru_cache()
 def debug_mode() -> bool:
     return AppMetaSettings().get_debug_mode
-
-
 
 @lru_cache()
 def webhooks_full_path() -> str:

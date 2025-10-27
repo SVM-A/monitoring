@@ -91,6 +91,7 @@ def load_cameras(cameras_json: str = None) -> Dict[str, dict]:
         if str(spec.get("type", "")).lower() == "widget":
             result[cam_id] = {"type": "widget", "widget": spec.get("widget", "").lower()}
             continue
+            continue
         url = build_rtsp_for_cam(spec, cam_id)
         if url:
             result[cam_id] = {"type": "rtsp", "url": url}

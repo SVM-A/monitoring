@@ -637,35 +637,78 @@ class WidgetBase(Thread):
     @staticmethod
     def _pick_sky_icon(day_info: dict, now_dt: datetime) -> str | None:
         """
-        Возвращает ключ иконки 'sky_sun' или 'sky_night' для СУХОЙ погоды.
-        Для дождя/снега — None (фон не ставим, чтобы не перегружать).
+        Новый выбор фоновой иконки:
+        - сушь -> день/ночь (sky_sun / sky_night)
+        - осадки -> соответствующая иконка (snow / sleet / drizzle / rain / rain_heavy / hail ...).
         """
-        rain = day_info.get("rain_mm")
-        if rain is not None:
+        return WidgetBase._infer_weather_icon_for_bg(day_info, now_dt)
+
+
+    @staticmethod
+    def _infer_weather_icon_for_bg(day_info: dict, now_dt: datetime) -> str | None:
+        """
+        Возвращает ключ иконки для ФОНА циферблата.
+        Логика:
+        - если осадков нет -> 'sky_sun' или 'sky_night' в зависимости от времени (восход/закат)
+        - если есть осадки -> подбираем явление (снег/мокрый снег/морось/ливень/град)
+        - если осадков мало, но ветер очень сильный -> ставим 'strong_wind_2'
+        """
+        tmax = day_info.get("tmax")
+        tmin = day_info.get("tmin")
+        rain = day_info.get("rain_mm")  # суточная сумма
+        wind = day_info.get("wind_ms")
+
+        # Вспомогалки
+        def is_night_by_sr_ss() -> bool:
+            sr_s = day_info.get("sunrise")
+            ss_s = day_info.get("sunset")
+            if not sr_s or not ss_s:
+                return False
             try:
-                rv = float(rain)
+                sr = datetime.strptime(sr_s, "%Y-%m-%dT%H:%M")
+                ss = datetime.strptime(ss_s, "%Y-%m-%dT%H:%M")
             except Exception:
-                rv = None
-            # если есть осадки — фоновую «небо»-иконку не рисуем
-            if rv is not None and rv > 0.0:
-                return None
+                return False
+            return (now_dt < sr) or (now_dt > ss)
 
-        sr_s = day_info.get("sunrise")
-        ss_s = day_info.get("sunset")
-        if not sr_s or not ss_s:
-            # нет данных — по умолчанию день
-            return "sky_sun"
+        # нормализуем
+        rv = float(rain) if rain is not None else 0.0
+        tmaxf = float(tmax) if tmax is not None else None
+        tminf = float(tmin) if tmin is not None else None
+        windf = float(wind) if wind is not None else 0.0
 
-        try:
-            # строки от Open-Meteo уже в локальном tz, просто парсим
-            sr = datetime.strptime(sr_s, "%Y-%m-%dT%H:%M")
-            ss = datetime.strptime(ss_s, "%Y-%m-%dT%H:%M")
-        except Exception:
-            return "sky_sun"
+        # 1) Сухо — чистое небо по дню/ночи
+        if rv <= 0.0:
+            return "sky_night" if is_night_by_sr_ss() else "sky_sun"
 
-        # ночь: до восхода или после заката
-        is_night = (now_dt < sr) or (now_dt > ss)
-        return "sky_night" if is_night else "sky_sun"
+        # 2) Осадки. Выявляем тип:
+        below0_max = (tmaxf is not None and tmaxf <= 0.0)
+        around0_mix = (
+            (tmaxf is not None and -1.5 <= tmaxf <= 2.0) or
+            (tminf is not None and -2.0 <= tminf <= 1.5)
+        )
+
+        # очень слабые осадки
+        if rv < 1.0:
+            # при минусе — снегопадик, около нуля — мокрый снег, иначе — морось
+            if below0_max:
+                return "snow"
+            if around0_mix:
+                return "sleet"
+            return "hail"
+
+        # заметные осадки
+        if below0_max:
+            return "snow"
+        if around0_mix:
+            # мокрый снег
+            return "sleet"
+        # сильные ливни
+        if rv >= RAIN_ALERT_MM:
+            # (если хочешь, тут можно "thunder" при других сигналах)
+            return "rain_heavy"
+        # обычный дождь
+        return "rain"
 
     # ---------------------- Композиции-панели ----------------------
 

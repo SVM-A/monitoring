@@ -8,6 +8,8 @@ from typing import Optional
 
 import cv2
 
+from app.core.config import get_debug_flags
+
 
 class FrameGrabber(Thread):
     def __init__(self, camera_id, src, out_queue: Queue, stop_event: Event,
@@ -22,6 +24,35 @@ class FrameGrabber(Thread):
         self.ui_queue = ui_queue            # локальная очередь для отрисовки (numpy кадры)
         self.ui_stride = ui_stride          # каждый N-й кадр кидать в UI (снижаем нагрузку)
         self._frame_idx = 0
+        self._pending_src = None
+        self._switch_needed = False
+
+    def set_source(self, new_src: str):
+        """Запросить смену источника (на прокси/обратно)."""
+        self._pending_src = new_src
+        self._switch_needed = True
+
+    def _switch_capture(self):
+        """Аккуратно переключить cap на новый URL, избегая «чёрного экрана»."""
+        import cv2
+        new_cap = cv2.VideoCapture(self._pending_src, cv2.CAP_FFMPEG)
+        if not new_cap or not new_cap.isOpened():
+            new_cap = cv2.VideoCapture(self._pending_src)
+            if not new_cap or not new_cap.isOpened():
+                print(f"[grabber] cannot switch to new src: {self._pending_src}")
+                self._pending_src = None
+                self._switch_needed = False
+                return
+        if getattr(self, "cap", None):
+            try:
+                self.cap.release()
+            except Exception:
+                pass
+        self.cap = new_cap
+        self.src = self._pending_src
+        self._pending_src = None
+        self._switch_needed = False
+        print(f"[grabber] switched to: {self.src}")
 
     def open_capture(self):
         self.cap = cv2.VideoCapture(self.src, cv2.CAP_FFMPEG)
@@ -38,6 +69,8 @@ class FrameGrabber(Thread):
                         time.sleep(self.reconnect_delay)
                         continue
                     self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                if self._switch_needed and self._pending_src:
+                    self._switch_capture()
                 ret, frame = self.cap.read()
                 if not ret or frame is None:
                     print(f"[{self.camera_id}] frame read failed, reconnecting...")
@@ -45,7 +78,8 @@ class FrameGrabber(Thread):
                     self.cap = None
                     time.sleep(self.reconnect_delay)
                     continue
-
+                if get_debug_flags().GRABBER_DEBUG:
+                    print(f"[{self.camera_id}] frame ok, enqueue to UI (every {self.ui_stride})")
                 # 1) в процесс — JPEG
                 ok, encoded = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
                 if ok:

@@ -8,17 +8,46 @@
       "pass_env": "CAM1_PASS",
       "protocol": "rtsp",
       "params": "mode=real&idc=1&ids=1",
-      "transport": "tcp"
+      "transport": "tcp",
+      "onvif": {
+        "mode": "proxy",
+        "host": "192.168.100.149",
+        "port": 80,
+        "user_env": "CAM1_USER",
+        "pass_env": "CAM1_PASS",
+        "profile_token": "Profile_1"
+      },
+      "desired": {
+        "width": 1920,
+        "height": 1080,
+        "bitrate_kbps": 2500,
+        "fps": 25,
+        "gop": 50
+      }
     },
     "exit": {
-      "host": "192.168.100.37",
+      "host": "192.168.100.198",
       "port": 554,
-      "path": "stream",
-      "user_env": "CAM1_USER",
+      "path": "av0_1",
+      "user_env": "CAM2_USER",
       "pass_env": "CAM1_PASS",
       "protocol": "rtsp",
-      "params": "mode=real&idc=1&ids=1",
-      "transport": "tcp"
+      "params": "",
+      "transport": "tcp",
+      "onvif": {
+        "host": "192.168.100.198",
+        "port": 8899,
+        "user_env": "CAM2_USER",
+        "pass_env": "CAM1_PASS",
+        "profile_token": "Profile_1"
+      },
+      "desired": {
+        "width": 1920,
+        "height": 1080,
+        "bitrate_kbps": 1800,
+        "fps": 25,
+        "gop": 50
+      }
     },
     "calclockweather": {
       "type": "widget",

@@ -4,7 +4,8 @@ from app.core.cam_configs.config_loader import load_roi, load_cameras
 from app.core.config import BASE_PATH
 
 # Основные настройки и константы, которые удобно видеть вверху.
-DB_PATH = BASE_PATH / "detections.db"    # База для фиксации распознанных номеров
+DB_PATH_DETECTION = BASE_PATH / "detections.db"
+DB_PATH_CAMERAS = BASE_PATH / "cameras.db"
 CAM_SOURCES = load_cameras()             # Источники камер и виджетов (из cam_configs/cameras.json)
 MAX_QUEUE_SIZE = 8                       # Ограничение очереди кадров для процессинга
 GLOBAL_ROI = load_roi()                  # Зоны интереса (можно менять на лету, см. SIGHUP)

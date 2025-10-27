@@ -4,10 +4,10 @@ import json
 import sqlite3
 from datetime import datetime
 
-from app.core.constants import DB_PATH
+from app.core.constants import DB_PATH_DETECTION
 
 
-def init_db(path=DB_PATH):
+def init_db(path=DB_PATH_DETECTION):
     conn = sqlite3.connect(path, check_same_thread=False)
     cur = conn.cursor()
     cur.execute("""
