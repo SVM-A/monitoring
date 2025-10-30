@@ -36,7 +36,7 @@ def build_rtsp_for_cam(cam_spec: Dict[str, Any], cam_key: str) -> Optional[str]:
     host = cam_spec.get("host")
     port = cam_spec.get("port")
     path = cam_spec.get("path", "")
-    base_params = cam_spec.get("params", "")  # << твои обязательные параметры камеры (mode/idc/ids)
+    base_params = cam_spec.get("params", "")
 
     # credentials
     user_env = cam_spec.get("user_env")
@@ -91,10 +91,37 @@ def load_cameras(cameras_json: str = None) -> Dict[str, dict]:
         if str(spec.get("type", "")).lower() == "widget":
             result[cam_id] = {"type": "widget", "widget": spec.get("widget", "").lower()}
             continue
-            continue
+
+        # базовый (как сейчас)
         url = build_rtsp_for_cam(spec, cam_id)
-        if url:
-            result[cam_id] = {"type": "rtsp", "url": url}
+
+        # дополнительные потоки (необязательно)
+        streams_spec = spec.get("streams") or {}
+        streams = {}
+        for skey, sdef in streams_spec.items():
+            merged = dict(spec) | dict(sdef or {})          # наследуем юзера/пароль/хост/порт/transport
+            streams[skey] = build_rtsp_for_cam(merged, cam_id)
+
+        url = build_rtsp_for_cam(spec, cam_id)
+
+        streams_spec = spec.get("streams") or {}
+        streams = {}
+        for skey, sdef in streams_spec.items():
+            merged = dict(spec) | dict(sdef or {})
+            streams[skey] = build_rtsp_for_cam(merged, cam_id)
+
+        # если верхний url пустой/некорректный, а streams есть — берём main/первый
+        if (not spec.get("path")) and streams:
+            url = streams.get("main") or next(iter(streams.values()))
+
+        entry = {"type": "rtsp", "url": url}
+        if streams:
+            entry["streams"] = streams
+        if spec.get("quality_presets"):
+            entry["quality_presets"] = spec["quality_presets"]
+        if spec.get("split"):
+            entry["split"] = spec["split"]  # "h" | "v"
+        result[cam_id] = entry
     return result
 
 def load_roi(roi_json: str = None) -> Dict[str, Any]:

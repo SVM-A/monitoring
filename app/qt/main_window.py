@@ -6,6 +6,10 @@ from PyQt6 import QtCore, QtWidgets, QtGui
 
 from app.core.constants import CAM_SOURCES
 from app.qt.widgets.canvas import CanvasWidget
+from app.qt.widgets.camera_controls import CameraControlDock
+from app.video.ffproxy import FFProxyManager, ProxyParams
+from app.core.constants import CAM_SOURCES
+from app.util.mask import mask_url
 
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -32,6 +36,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self.stop_event_threads = stop_event_threads
         self.stop_event_proc = stop_event_proc
         self.grabbers = grabbers
+        # быстрый доступ: cam_id -> grabber
+        self._gmap = {g.camera_id: g for g in grabbers if hasattr(g, "camera_id")}
+        self._proxy = FFProxyManager()  # локальный менеджер ffmpeg-прокси
+
+        # док-панель
+        self.ctrl = CameraControlDock(self)
+        self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, self.ctrl)
+        self.ctrl.applyRequested.connect(self._on_apply_video)
+        self.ctrl.streamSwitchRequested.connect(self._on_switch_stream)
         self.proc = proc
 
         # Горячие клавиши (через QtGui.QShortcut)
@@ -39,6 +52,42 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Мини-статусбар на будущее
         self.statusBar().showMessage("Ready")
+
+    def _on_switch_stream(self, cam_id: str, skey: str):
+        spec = CAM_SOURCES.get(cam_id, {})
+        streams = (spec or {}).get("streams") or {}
+        url = streams.get(skey) or spec.get("url")
+        g = self._gmap.get(cam_id)
+        if g and url:
+            g.set_source(url)
+            self.statusBar().showMessage(f"{cam_id}: switch to {skey} → {mask_url(url)}", 3000)
+
+    def _on_apply_video(self, cam_id: str, p: dict):
+        # перезапускаем прокси для данного cam_id:
+        spec = CAM_SOURCES.get(cam_id, {})
+        source_url = spec.get("url")
+        if not source_url:
+            return
+        params = ProxyParams(
+            width=int(p.get("width", 1280)),
+            height=int(p.get("height", 720)),
+            fps=int(p.get("fps", 25)),
+            gop=int(p.get("gop", 50)),
+            bitrate_kbps=int(p.get("bitrate_kbps", 2500)),
+        )
+        try:
+            runtime = self._proxy.restart(cam_id, source_url, params)
+            # переведём граббер на runtime_url (моментально)
+            g = self._gmap.get(cam_id)
+            if g:
+                g.set_source(runtime)
+            self.statusBar().showMessage(f"{cam_id}: proxy {params.width}x{params.height}@{params.fps} {params.bitrate_kbps}k → {mask_url(runtime)}", 4000)
+        except Exception as e:
+            self.statusBar().showMessage(f"{cam_id}: proxy failed → direct", 4000)
+            g = self._gmap.get(cam_id)
+            if g:
+                g.set_source(source_url)
+
 
     def _setup_shortcuts(self):
         # Esc — снять фокус

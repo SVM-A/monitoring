@@ -73,6 +73,11 @@ def load_cameras(json_path: Path | None = None) -> List[dict]:
         if str(spec.get("type", "")).lower() == "widget":
             continue
         rtsp = build_rtsp_for_cam(spec, cam_id)
+        if (not spec.get("path")) and spec.get("streams"):
+            streams_spec = spec["streams"]
+            skey = "main" if "main" in streams_spec else next(iter(streams_spec))
+            merged = dict(spec) | dict(streams_spec[skey] or {})
+            rtsp = build_rtsp_for_cam(merged, cam_id)
         onvif = _resolve_onvif(spec.get("onvif"))
         out.append({
             "id": cam_id,

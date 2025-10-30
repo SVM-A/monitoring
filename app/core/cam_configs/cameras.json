@@ -3,55 +3,61 @@
     "entry": {
       "host": "192.168.100.149",
       "port": 554,
-      "path": "stream",
       "user_env": "CAM1_USER",
       "pass_env": "CAM1_PASS",
       "protocol": "rtsp",
       "params": "mode=real&idc=1&ids=1",
       "transport": "tcp",
-      "onvif": {
-        "mode": "proxy",
-        "host": "192.168.100.149",
-        "port": 80,
-        "user_env": "CAM1_USER",
-        "pass_env": "CAM1_PASS",
-        "profile_token": "Profile_1"
+      "streams": {
+        "main": {"path": "stream",  "params": "mode=real&idc=1&ids=1"},
+        "sub":  {"path": "stream", "params": "mode=real&idc=1&ids=2"}
       },
-      "desired": {
-        "width": 1920,
-        "height": 1080,
-        "bitrate_kbps": 2500,
-        "fps": 25,
-        "gop": 50
-      }
+      "quality_presets": [
+        {"label":"1080p@25 • 2500k", "width":1920,"height":1080,"fps":25,"bitrate_kbps":2500,"gop":50},
+        {"label":"720p@25  • 1500k", "width":1280,"height":720,"fps":25,"bitrate_kbps":1500,"gop":50}
+      ],
+      "onvif": { "mode": "proxy", "host": "192.168.100.149", "port": 80, "user_env": "CAM1_USER", "pass_env": "CAM1_PASS", "profile_token": "Profile_1" },
+      "desired": {"width":1920,"height":1080,"bitrate_kbps":2500,"fps":25,"gop":50}
     },
     "exit": {
+      "host": "192.168.100.37",
+      "port": 554,
+      "user_env": "CAM1_USER",
+      "pass_env": "CAM1_PASS",
+      "protocol": "rtsp",
+      "params": "mode=real&idc=1&ids=1",
+      "transport": "tcp",
+      "streams": {
+        "main": {"path": "stream",  "params": "mode=real&idc=1&ids=1"},
+        "sub":  {"path": "stream", "params": "mode=real&idc=1&ids=2"}
+      },
+      "quality_presets": [
+        {"label":"1080p@25 • 2500k", "width":1920,"height":1080,"fps":25,"bitrate_kbps":2500,"gop":50},
+        {"label":"720p@25  • 1500k", "width":1280,"height":720,"fps":25,"bitrate_kbps":1500,"gop":50}
+      ],
+      "onvif": { "mode": "proxy", "host": "192.168.100.8899", "port": 80, "user_env": "CAM1_USER", "pass_env": "CAM1_PASS", "profile_token": "Profile_1" },
+      "desired": {"width":1920,"height":1080,"bitrate_kbps":2500,"fps":25,"gop":50}
+    },
+    "dual-sky": {
       "host": "192.168.100.198",
       "port": 554,
-      "path": "av0_1",
       "user_env": "CAM2_USER",
       "pass_env": "CAM1_PASS",
       "protocol": "rtsp",
-      "params": "",
       "transport": "tcp",
-      "onvif": {
-        "host": "192.168.100.198",
-        "port": 8899,
-        "user_env": "CAM2_USER",
-        "pass_env": "CAM1_PASS",
-        "profile_token": "Profile_1"
+      "streams": {
+        "main": {"path": "user={CAM2_USER}_password={CAM1_PASS}_channel=0", "params": ""},
+        "sub":  {"path": "user={CAM2_USER}_password={CAM1_PASS}_channel=0", "params": ""}
       },
-      "desired": {
-        "width": 1920,
-        "height": 1080,
-        "bitrate_kbps": 1800,
-        "fps": 25,
-        "gop": 50
-      }
+      "split": "h",
+      "quality_presets": [
+        { "label": "FHD×2 (1920×2160) • 25fps • 2500k", "width": 1920, "height": 2160, "fps": 25, "bitrate_kbps": 2500, "gop": 50 },
+        { "label": "FHD (1920×1080) • 25fps • 2000k",   "width": 1920, "height": 1080, "fps": 25, "bitrate_kbps": 2000, "gop": 50 },
+        { "label": "HD (1280×720) • 25fps • 1200k",     "width": 1280, "height": 720,  "fps": 25, "bitrate_kbps": 1200, "gop": 50 }
+      ],
+      "onvif": { "host":"192.168.100.198", "port":8899, "user_env":"CAM2_USER", "pass_env":"CAM1_PASS", "profile_token":"Profile_1" },
+      "desired": {"width":1920,"height":1080,"bitrate_kbps":1800,"fps":25,"gop":50}
     },
-    "calclockweather": {
-      "type": "widget",
-      "widget": "calclockweather"
-    }
+    "calclockweather": { "type":"widget", "widget":"calclockweather" }
   }
 }
