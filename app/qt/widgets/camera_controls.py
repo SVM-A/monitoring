@@ -12,6 +12,15 @@ class CameraControlDock(QtWidgets.QDockWidget):
 
     def __init__(self, parent=None):
         super().__init__("Камера", parent)
+        self.setAllowedAreas(QtCore.Qt.DockWidgetArea.RightDockWidgetArea)
+        self.setFeatures(
+            QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetClosable
+            | QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetMovable
+        )
+        self.setMinimumWidth(260)
+        self.setMaximumWidth(360)
+
+
         self.setObjectName("CameraControlDock")
         w = QtWidgets.QWidget(self)
         self.setWidget(w)

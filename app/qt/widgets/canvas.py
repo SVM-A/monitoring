@@ -21,6 +21,13 @@ class CanvasWidget(QtWidgets.QWidget):
         self.last_rects: Dict[str, Tuple[int, int, int, int]] = {}
         self.setMouseTracking(True)
         self.setMinimumSize(1280, 720)
+        self._right_scroll = 0
+        self._right_total = 0
+        self._sb_active = False
+        self._sb_track = QtCore.QRect()
+        self._sb_thumb = QtCore.QRect()
+        self._sb_dragging = False
+        self._sb_drag_offset = 0
 
     # ==== хелперы для "виртуальных" половин ====
 
@@ -110,17 +117,52 @@ class CanvasWidget(QtWidgets.QWidget):
 
     # ==== события ====
 
+    def mouseMoveEvent(self, e: QtGui.QMouseEvent):
+        if self._sb_dragging and self._sb_active:
+            y = e.position().toPoint().y()
+            max_scroll = max(0, self._right_total - self.height())
+            # позиция верхней грани бегунка в пределах трека
+            top_in_track = y - self._sb_drag_offset
+            top_in_track = min(max(top_in_track, self._sb_track.top()),
+                               self._sb_track.bottom() - self._sb_thumb.height())
+            # нормируем
+            denom = max(1, self._sb_track.height() - self._sb_thumb.height())
+            rel = (top_in_track - self._sb_track.top()) / float(denom)
+            self._right_scroll = int(rel * max_scroll)
+            self.update()
+
+    def mouseReleaseEvent(self, e: QtGui.QMouseEvent):
+        if e.button() == QtCore.Qt.MouseButton.LeftButton and self._sb_dragging:
+            self._sb_dragging = False
+
     def mousePressEvent(self, e: QtGui.QMouseEvent):
         if e.button() == QtCore.Qt.MouseButton.LeftButton:
             p = e.position().toPoint()
             x, y = p.x(), p.y()
+
+            # сначала проверяем скроллбар, если активен
+            if self._sb_active and self._sb_track.contains(x, y):
+                max_scroll = max(0, self._right_total - self.height())
+                if self._sb_thumb.contains(x, y):
+                    # начинаем drag
+                    self._sb_dragging = True
+                    self._sb_drag_offset = y - self._sb_thumb.top()
+                    return
+                else:
+                    # клик по треку — прыгнуть к положению
+                    # позиция внутри трека -> доля -> _right_scroll
+                    rel = (y - self._sb_track.top()) / max(1.0, self._sb_track.height() - self._sb_thumb.height())
+                    rel = min(max(rel, 0.0), 1.0)
+                    self._right_scroll = int(rel * max_scroll)
+                    self.update()
+                    return
+
+            # обычный клик по миниатюрам/фокусу
             for cid, (x0, y0, x1, y1) in self.last_rects.items():
                 if x0 <= x <= x1 and y0 <= y <= y1:
-                    # виджеты не берём в фокус
-                    if CAM_SOURCES.get(cid.split(_VSEP)[0], {}).get("type") != "widget":
-                        self.focus_id = None if self.focus_id == cid else cid
-                        self.update()
-                        break
+                    self.focus_id = None if self.focus_id == cid else cid
+                    self.update()
+                    break
 
     def paintEvent(self, e: QtGui.QPaintEvent):
         # 1) готовим "видимые" кадры (с распилом split-камер)
@@ -142,18 +184,20 @@ class CanvasWidget(QtWidgets.QWidget):
                         a, b = t, bo
                     visible[focus_id] = a if part == "A" else b
                 except Exception:
-                    visible[focus_id] = src  # fallback: целиком
+                    visible[focus_id] = src  # fallback: целикомwheelEvent
 
         # 3) рендер лэйаута (если нет фокуса — обычная сетка)
         out_w = max(640, self.width())
         out_h = max(360, self.height())
-        canvas, rects = compose_focus_layout(
+        canvas, rects, total_h = compose_focus_layout(
             visible,
             focus_id=focus_id,
             widget_ids=self.widget_ids,
             out_size=(out_w, out_h),
-            widget_size=(640, 360)
+            widget_size=(640, 360),
+            scroll_offset=self._right_scroll
         )
+        self._right_total = total_h
         self.last_rects = rects
 
         if canvas is None or canvas.size == 0:
@@ -167,4 +211,42 @@ class CanvasWidget(QtWidgets.QWidget):
         painter.setRenderHint(QtGui.QPainter.RenderHint.SmoothPixmapTransform, True)
         painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
         painter.drawImage(0, 0, qimg)
+
+        # Индикатор прокрутки правой колонки (тонкая полоска у правого края)
+        max_scroll = max(0, self._right_total - out_h)
+        if max_scroll > 0 and self.focus_id:
+            track_w = 6
+            track_x = self.width() - track_w - 4
+            track_y = 8
+            track_h = self.height() - 16
+
+            thumb_h = max(24, int(track_h * (self.height() / float(self._right_total))))
+            frac = 0.0 if max_scroll == 0 else (self._right_scroll / float(max_scroll))
+            thumb_y = track_y + int((track_h - thumb_h) * frac)
+
+            # дорожка
+            painter.fillRect(track_x, track_y, track_w, track_h, QtGui.QColor(255, 255, 255, 40))
+            # ползунок
+            painter.fillRect(track_x, thumb_y, track_w, thumb_h, QtGui.QColor(255, 255, 255, 120))
+
+            # <<< сохраняем геометрию для интерактива
+            self._sb_active = True
+            self._sb_track = QtCore.QRect(track_x, track_y, track_w, track_h)
+            self._sb_thumb = QtCore.QRect(track_x, thumb_y, track_w, thumb_h)
+        else:
+            self._sb_active = False
+            self._sb_track = QtCore.QRect()
+            self._sb_thumb = QtCore.QRect()
+
         painter.end()
+
+    def wheelEvent(self, e: QtGui.QWheelEvent):
+        # скроллим только когда есть фокус (есть правая колонка миниатюр)
+        if not self.focus_id:
+            return
+        delta = e.angleDelta().y()
+        # было: step = -40 if delta < 0 else 40
+        step = 40 if delta < 0 else -40  # <<< инвертировали знак
+        max_scroll = max(0, self._right_total - self.height())
+        self._right_scroll = int(min(max(self._right_scroll + step, 0), max_scroll))
+        self.update()

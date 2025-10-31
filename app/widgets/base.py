@@ -30,7 +30,7 @@ from app.core.constants import (
     CLOCK_NORMAL,
     CLOCK_WEEKEND,
     CLOCK_HOLIDAY, BADGE_TEXT, BADGE_BG, COLOR_TEMP, WX_ICON_RAIN_HEAVY, BADGE_RAIN_HIGH, WX_ICON_RAIN_LIGHT,
-    BADGE_RAIN, WX_ICON_DRY, WX_ICON_WIND, BADGE_WIND,
+    BADGE_RAIN, WX_ICON_DRY, WX_ICON_WIND, BADGE_WIND, RAIN_ALERT_MM,
 )
 from app.ui.design_system import DS
 from app.ui.icons import get_icon
@@ -46,9 +46,12 @@ WEATHER_LON = float(os.environ.get("WEATHER_LON", 37.647653))
 WEATHER_TZ  = os.environ.get("WEATHER_TZ", "Europe/Moscow")
 
 # Пороги для "аномалий"
-WIND_ALERT_MS = float(os.environ.get("WIND_ALERT_MS", 12.0))     # ≥12 м/с — сильный ветер
-RAIN_ALERT_MM = float(os.environ.get("RAIN_ALERT_MM", 8.0))      # ≥8 мм/сутки — заметные осадки
-
+WIND_ALERT_MS      = float(os.environ.get("WIND_ALERT_MS", 12.0))   # сильный ветер
+WIND_SQUALL_MS     = float(os.environ.get("WIND_SQUALL_MS", 20.0))  # шквалистый ветер/шторм
+WIND_HURRICANE_MS  = float(os.environ.get("WIND_HURRICANE_MS", 28.0))  # ураганный ветер
+UV_DANGEROUS       = float(os.environ.get("UV_DANGEROUS", 7.0))     # опасный УФ-уровень
+ICE_MIX_RANGE_MIN  = float(os.environ.get("ICE_MIX_RANGE_MIN", -2.0))
+ICE_MIX_RANGE_MAX  = float(os.environ.get("ICE_MIX_RANGE_MAX",  2.0))
 
 class WidgetBase(Thread):
     """
@@ -117,25 +120,44 @@ class WidgetBase(Thread):
 
     # ---------------------- Праздники ----------------------
     def refresh_holidays_if_needed(self, ttl: float = 900.0) -> None:
+        """
+        Обновляет локальный кэш праздников.
+        ФИКСЫ:
+        - читаем holidays из объекта {"year": ..., "holidays": [...], ...}
+        - парсим ISO дату вида "YYYY-MM-DDTHH:MM:SS.sssZ" → date
+        """
         now = time.time()
         if now - self._holidays_last_fetch < ttl:
             return
+
         today = date.today()
-        horizon = today + timedelta(days=60)  # запасом на 2 месяца
+        horizon = today + timedelta(days=60)  # запас на ~2 месяца
         years = sorted({today.year, horizon.year})
+
         by_date: dict[date, str] = {}
         for y in years:
             url = f"{self.API_BASE}/{y}/holidays"
             try:
-                data = self.fetch_json_cached(url, ttl=ttl)
+                data = self.fetch_json_cached(url, ttl=ttl) or {}
             except Exception:
                 continue
-            for item in data or []:
-                try:
-                    d = datetime.strptime(item.get("date"), "%Y-%m-%d").date()
-                    by_date[d] = item.get("name", "Праздник")
-                except Exception:
+
+            # >>> тут главное отличие:
+            hols = (data.get("holidays") or []) if isinstance(data, dict) else []
+            for item in hols:
+                ds = (item or {}).get("date")
+                if not ds:
                     continue
+                # ожидается ISO с 'T' — берём только дату
+                try:
+                    dstr = ds.split("T", 1)[0]  # "2025-11-04"
+                    y_, m_, d_ = (int(p) for p in dstr.split("-"))
+                    d = date(y_, m_, d_)
+                    by_date[d] = (item.get("name") or "Праздник")
+                except Exception:
+                    # если вдруг формат другой — молча пропускаем
+                    continue
+
         self._holidays_by_date = by_date
         self._holidays_last_fetch = now
 
@@ -151,6 +173,20 @@ class WidgetBase(Thread):
         items = [(d, name) for d, name in self._holidays_by_date.items() if start <= d <= end]
         items.sort(key=lambda x: x[0])
         return items
+
+    def group_upcoming_holidays(self, start: date, horizon_days: int = 14) -> list[tuple[str, list[date]]]:
+        """
+        Возвращает список [(holiday_name, [dates...])], сгруппированный и отсортированный
+        по первой дате праздника.
+        """
+        items = self.upcoming_holidays(start, horizon_days)
+        groups: dict[str, list[date]] = {}
+        for d, name in items:
+            groups.setdefault(name, []).append(d)
+        # сортировка по первой дате каждого праздника
+        ordered = sorted(groups.items(), key=lambda kv: min(kv[1]))
+        # и даты внутри каждого праздника по возрастанию
+        return [(name, sorted(ds)) for name, ds in ordered]
 
     # ---------------------- Рендер-хелперы ----------------------
 
@@ -523,6 +559,7 @@ class WidgetBase(Thread):
             draw.text((ix, ty), text, fill=fill_rgb, font=font)
             w = (ix - x) + draw.textlength(text, font=font)
         return int(w)
+
     def _clock_text_color_for_day(self, day: date) -> tuple[int, int, int]:
         kind = self.today_kind(day)
         if kind == "holiday":
@@ -743,9 +780,9 @@ class WidgetBase(Thread):
         upcoming = self.upcoming_holidays(now.date(), horizon_days=14)
         if upcoming:
             lines = [f"{d.strftime('%d.%m')} — {name}" for d, name in upcoming]
-            text = "В ближайшие дни флаги вывешиваются:\n" + "\n".join(lines)
+            text = "В ближайшие 14 дней флаги вывешиваются:\n" + "\n".join(lines)
         else:
-            text = "В ближайшие 14 дней флаги вешать не надо."
+            text = "В ближайшие 14 дней флаги вывешивать не надо."
         y = 90
         for line in text.split("\n"):
             draw.text((30, y), line, fill=COLOR_TEXT, font=FONT24)
@@ -775,15 +812,20 @@ class WidgetBase(Thread):
         info_w = left_w
         draw.rectangle([info_x, info_top - 10, info_x + info_w, info_top + 110], fill=(24, 24, 28))
         upcoming = self.upcoming_holidays(today, horizon_days=14)
-        if upcoming:
+        upcoming_groups = self.group_upcoming_holidays(today, horizon_days=14)
+        if upcoming_groups:
             header = "Флаги должны висеть:"
-            draw.text((info_x + 10, info_top), header, fill=COLOR_ALERT, font=FONT32 or FONT24)
-            lines = [f"{d.strftime('%d.%m')} — {name}" for d, name in upcoming]
-            text = "\n".join(lines)
-            draw_wrapped_text(draw, (info_x + 10, info_top + 40), text, max_width=info_w - 20,
-                              line_height=28, font=FONT24)
+            draw.text((info_x + 10, info_top), "Флаги должны висеть:", fill=COLOR_ALERT, font=FONT32 or FONT24)
+            y_ptr = info_top + 40
+            for name, ds in upcoming_groups:
+                dates = ", ".join(d.strftime("%d.%m") for d in ds)
+                line = f"{name}: {dates}"
+                y_ptr = draw_wrapped_text(
+                    draw, (info_x + 10, y_ptr), line,
+                    max_width=info_w - 20, line_height=28, font=FONT24
+                )
         else:
-            header = "В ближайшие 14 дней флаги вешать не надо."
+            header = "В ближайшие 14 дней флаги вывешивать не надо."
             draw.text((info_x + 10, info_top), header, fill=COLOR_OK, font=FONT32 or FONT24)
         # Правая колонка: аналоговые часы + цифровые, ПРИКЛЕЕНЫЕ к циферблату
         right_x = left_x + left_w + 20
@@ -830,7 +872,8 @@ class WidgetBase(Thread):
             weather = self.fetch_weather_daily_cached()
         except Exception:
             weather = {}
-        wx_today = weather.get(today) or {}
+        wx_map = self._daily_to_map(weather)
+        wx_today = wx_map.get(today, {})
 
         # Подготовим окно дат
         start, end = self.four_week_window(today)
@@ -843,9 +886,9 @@ class WidgetBase(Thread):
         left_w = (W * 2) // 3 - 40
         left_h = H - 60
         self.draw_4weeks_with_weather(
-            im, draw,               # 👈 передаём base image
+            im, draw,
             left_x, left_y, left_w, left_h,
-            start, today, weather
+            start, today, wx_map
         )
         # ПРАВО: часы + цифровые
         right_x = left_x + left_w + 20
@@ -947,14 +990,18 @@ class WidgetBase(Thread):
         ly += 10
 
         # Флаги под чертой (без отдельной подложки, в цвет ячейки)
-        upcoming = self.upcoming_holidays(today, horizon_days=14)
-        if upcoming:
+        upcoming_groups = self.group_upcoming_holidays(today, horizon_days=14)
+        if upcoming_groups:
             draw.text((lx, ly), "Флаги должны висеть:", fill=COLOR_ALERT, font=FONT24)
             ly += FONT24.size + 6
-            lines = [f"{d.strftime('%d.%m')} — {name}" for d, name in upcoming]
             y_ptr = ly
-            y_ptr = draw_wrapped_text(draw, (lx, y_ptr), "   ".join(lines),
-                                      max_width=lw, line_height=26, font=FONT18)
+            for name, ds in upcoming_groups:
+                dates = ", ".join(d.strftime("%d.%m") for d in ds)
+                line = f"{name}: {dates}"
+                y_ptr = draw_wrapped_text(
+                    draw, (lx, y_ptr), line,
+                    max_width=lw, line_height=26, font=FONT18
+                )
             left_bottom_y = y_ptr
         else:
             draw.text((lx, ly), "В ближайшие 14 дней флаги вешать не надо", fill=COLOR_OK, font=FONT24)
@@ -962,57 +1009,43 @@ class WidgetBase(Thread):
 
         # ---------- ПРАВАЯ: аномалии (с отступами, крупнее, центр и перенос по словам) ----------
         rx, ry, rw = right_x_half, content_top, right_w_half
-        anoms = self._collect_anomalies(wx_today)
 
-        # Паддинги внутри правой полу-ячейки
-        a_pad_x = 16
-        a_pad_top = 10
-        a_pad_between = 14  # зазор между карточками аномалий
+        # Заголовок секции
+        hdr = "Погодные условия"
+        hdr_w = draw.textlength(hdr, font=FONT28)
+        draw.text((rx + (rw - hdr_w) / 2, ry), hdr, fill=COLOR_SUB, font=FONT28)
+        ry += FONT28.size + 8
 
-        # Увеличенные размеры (FONT48 и FONT28 уже есть в проекте)
-        a_icon_sz = FONT48.size
+        # Собираем человекочитаемый текст (сегодня = index 0)
+        anom_text = self.render_anomaly_text(weather, index=0)
+
+        # Перенос по словам и центрирование каждой строки
         lab_font = FONT28
+        max_w = rw - 32
+        words = anom_text.split()
+        lines = []
+        cur = ""
+        for w_ in words:
+            test = (cur + " " + w_).strip()
+            if draw.textlength(test, font=lab_font) <= max_w:
+                cur = test
+            else:
+                if cur:
+                    lines.append(cur)
+                cur = w_
+        if cur:
+            lines.append(cur)
 
-        # Вспомогательная функция: перенос по словам и центр каждой строки
-        def _draw_center_wrapped(text: str, top_y: int, color: tuple[int, int, int]) -> int:
-            max_w = rw - 2 * a_pad_x
-            words = text.split()
-            lines, cur = [], ""
-            for w_ in words:
-                test = (cur + " " + w_).strip()
-                if draw.textlength(test, font=lab_font) <= max_w:
-                    cur = test
-                else:
-                    if cur:
-                        lines.append(cur)
-                    cur = w_
-            if cur:
-                lines.append(cur)
-            y_ptr_local = top_y
-            for ln in lines:
-                tw = draw.textlength(ln, font=lab_font)
-                lx_c = rx + (rw - tw) / 2
-                draw.text((lx_c, y_ptr_local), ln, fill=color, font=lab_font,
-                          stroke_width=2, stroke_fill=(0, 0, 0))
-                y_ptr_local += lab_font.size + 4
-            return y_ptr_local
+        # Цвет: если аномалий нет — мягкий серый, иначе — акцент
+        txt_col = (180, 180, 190) if anom_text.strip().lower() == "Стабильная погодые условия" else COLOR_ALERT
 
-        if anoms:
-            y_ptr = ry + a_pad_top
-            for (icon_key, label, col) in anoms:
-                icon = get_icon(icon_key, size=a_icon_sz)
-                if icon is not None:
-                    im.paste(icon, (rx + (rw - a_icon_sz) // 2, y_ptr), mask=icon)
-                y_ptr += a_icon_sz + 6
-                y_ptr = _draw_center_wrapped(label, y_ptr, col)
-                y_ptr += a_pad_between
-        else:
-            _ = _draw_center_wrapped("Погодных аномалий нет", ry + a_pad_top, (180, 180, 190))
+        for ln in lines:
+            tw = draw.textlength(ln, font=lab_font)
+            lx = rx + (rw - tw) / 2
+            draw.text((lx, ry), ln, fill=txt_col, font=lab_font, stroke_width=2, stroke_fill=(0, 0, 0))
+            ry += lab_font.size + 6
 
         return cv2.cvtColor(np.asarray(im), cv2.COLOR_RGB2BGR)
-
-
-
 
 
     # ---------------------- Погода (Open-Meteo) ----------------------
@@ -1024,39 +1057,119 @@ class WidgetBase(Thread):
             ttl: float = 1800.0,
             timeout: float = 6.0
     ) -> dict:
+        """
+        Daily-погода с деталями: дождь/снег отдельно, шквалы, UV, tmin/tmax, восход/закат.
+        """
         url = (
             "https://api.open-meteo.com/v1/forecast"
             f"?latitude={lat}&longitude={lon}"
-            "&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,windspeed_10m_max,sunrise,sunset"
+            "&daily="
+            "temperature_2m_max,temperature_2m_min,"
+            "precipitation_sum,rain_sum,snowfall_sum,"
+            "windspeed_10m_max,windgusts_10m_max,"
+            "uv_index_max,sunrise,sunset"
             "&windspeed_unit=ms"
             "&past_days=7&forecast_days=16"
             f"&timezone={tz}"
         )
         data = self.fetch_json_cached(url, ttl=ttl, timeout=timeout) or {}
         daily = data.get("daily") or {}
-        dates = daily.get("time") or []
-        tmax = daily.get("temperature_2m_max") or []
-        tmin = daily.get("temperature_2m_min") or []
-        rain = daily.get("precipitation_sum") or []
-        wind = daily.get("windspeed_10m_max") or []
-        sunrise = daily.get("sunrise") or []
-        sunset = daily.get("sunset") or []
 
-        by_date: dict[date, dict] = {}
-        for i, ds in enumerate(dates):
+        # Гарантируем наличие всех полей
+        def arr(name): return daily.get(name) or []
+
+        return {
+            "time": arr("time"),
+            "tmax": arr("temperature_2m_max"),
+            "tmin": arr("temperature_2m_min"),
+            "precip": arr("precipitation_sum"),
+            "rain": arr("rain_sum"),
+            "snow": arr("snowfall_sum"),
+            "wind_max": arr("windspeed_10m_max"),
+            "gust_max": arr("windgusts_10m_max"),
+            "uv_max": arr("uv_index_max"),
+            "sunrise": arr("sunrise"),
+            "sunset": arr("sunset"),
+        }
+
+
+    def _safe_get(self, a, i, default=0.0):
+        try:
+            return a[i]
+        except Exception:
+            return default
+
+    def render_anomaly_text(self, daily: dict, index: int = 0) -> str:
+        """
+        Собирает «человеческие» аномалии на русском для дня с указанным index (0 — сегодня).
+        Логика:
+        - Любые осадки попадают в список (Дождь / Снег / Дождь со снегом).
+        - Если около нуля и есть дождь — добавляем «Гололед».
+        - Ветер по градациям: Сильный / Шквалистый / Ураган.
+        - УФ: «Опасный УФ уровень» при uv >= UV_DANGEROUS.
+        """
+        labels = []
+
+        tmin = float(self._safe_get(daily.get("tmin", []), index, 0.0))
+        tmax = float(self._safe_get(daily.get("tmax", []), index, 0.0))
+        rain = float(self._safe_get(daily.get("rain", []), index, 0.0))
+        snow = float(self._safe_get(daily.get("snow", []), index, 0.0))
+        wind = float(self._safe_get(daily.get("wind_max", []), index, 0.0))
+        gust = float(self._safe_get(daily.get("gust_max", []), index, 0.0))
+        uv = float(self._safe_get(daily.get("uv_max", []), index, 0.0))
+
+        near_zero = (ICE_MIX_RANGE_MIN <= tmin <= ICE_MIX_RANGE_MAX) or (ICE_MIX_RANGE_MIN <= tmax <= ICE_MIX_RANGE_MAX)
+
+        # Осадки
+        if rain > 0.0 and snow > 0.0:
+            labels.append("Дождь со снегом")
+            if near_zero:
+                labels.append("Гололед")
+        elif snow > 0.0:
+            labels.append("Снег")
+        elif rain > 0.0:
+            labels.append("Дождь")
+            if near_zero:
+                labels.append("Гололед")
+
+        # Ветер: сначала самая сильная категория
+        wind_ref = max(wind, gust)  # учитываем порывы
+        if wind_ref >= WIND_HURRICANE_MS:
+            labels.append("Ураган")
+        elif wind_ref >= WIND_SQUALL_MS:
+            labels.append("Шквальный ветер")
+        elif wind_ref >= WIND_ALERT_MS:
+            labels.append("Сильный ветер")
+
+        # УФ
+        if uv >= UV_DANGEROUS:
+            labels.append("Опасный УФ уровень")
+
+        return ", ".join(dict.fromkeys(labels)) if labels else "Аномалий нет"
+
+    def _daily_to_map(self, daily: dict) -> dict[date, dict]:
+        """
+        Превращает daily-массивы из fetch_weather_daily_cached()
+        в словарь {date: {...}} с ключами под рендер.
+        """
+        out: dict[date, dict] = {}
+        times = daily.get("time") or []
+        for i, ds in enumerate(times):
             try:
-                d = datetime.strptime(ds, "%Y-%m-%d").date()
-                by_date[d] = {
-                    "tmax": tmax[i] if i < len(tmax) else None,
-                    "tmin": tmin[i] if i < len(tmin) else None,
-                    "rain_mm": rain[i] if i < len(rain) else None,
-                    "wind_ms": wind[i] if i < len(wind) else None,
-                    # сохраняем ISO-строки локального времени (уже в tz)
-                    "sunrise": sunrise[i] if i < len(sunrise) else None,
-                    "sunset": sunset[i] if i < len(sunset) else None,
-                }
+                y, m, d = (int(p) for p in str(ds).split("-")[:3])
+                day = date(y, m, d)
             except Exception:
                 continue
-        return by_date
-
-
+            out[day] = {
+                "tmax": self._safe_get(daily.get("tmax", []), i, None),
+                "tmin": self._safe_get(daily.get("tmin", []), i, None),
+                "rain_mm": self._safe_get(daily.get("rain", []), i, 0.0),
+                "precip_mm": self._safe_get(daily.get("precip", []), i, 0.0),
+                "snow_mm": self._safe_get(daily.get("snow", []), i, 0.0),
+                "wind_ms": self._safe_get(daily.get("wind_max", []), i, 0.0),
+                "gust_ms": self._safe_get(daily.get("gust_max", []), i, 0.0),
+                "uv": self._safe_get(daily.get("uv_max", []), i, 0.0),
+                "sunrise": self._safe_get(daily.get("sunrise", []), i, None),
+                "sunset": self._safe_get(daily.get("sunset", []), i, None),
+            }
+        return out

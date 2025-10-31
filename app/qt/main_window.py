@@ -42,6 +42,27 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # док-панель
         self.ctrl = CameraControlDock(self)
+
+        # --- узкая кнопка-«хэндл» на левой грани док-панели ---
+        self._dock_handle = QtWidgets.QToolButton(self)
+        self._dock_handle.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self._dock_handle.setAutoRaise(True)
+        self._dock_handle.setFixedSize(16, 48)  # тонкая, «вровень» с кромкой
+        self._dock_handle.setStyleSheet("""
+            QToolButton {
+                background: rgba(0,0,0,80);
+                border-top-left-radius: 6px;
+                border-bottom-left-radius: 6px;
+                border: 1px solid rgba(255,255,255,40);
+            }
+        """)
+        self._dock_handle.setText("◀")  # когда панель видна — «свернуть вправо»
+        self._dock_handle.clicked.connect(self.toggle_controls)
+
+        # следим за изменением геометрии дока, чтобы держать хэндл на кромке
+        self.ctrl.installEventFilter(self)
+        self._reposition_dock_handle()
+
         self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, self.ctrl)
         self.ctrl.applyRequested.connect(self._on_apply_video)
         self.ctrl.streamSwitchRequested.connect(self._on_switch_stream)
@@ -52,6 +73,97 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Мини-статусбар на будущее
         self.statusBar().showMessage("Ready")
+
+        # == Сохранение геометрии/состояния ==
+        self._settings = QtCore.QSettings("MonitoringBazy", "CameraUI")
+        if (geo := self._settings.value("win/geometry")):
+            self.restoreGeometry(geo)
+        if (state := self._settings.value("win/state")):
+            self.restoreState(state)
+
+        # == Кнопка-«язычок» для сворачивания панели справа ==
+        self._dock_anim = QtCore.QPropertyAnimation(self.ctrl, b"maximumWidth", self)
+        self._dock_anim.setDuration(160)
+        self._dock_anim.setEasingCurve(QtCore.QEasingCurve.Type.InOutCubic)
+
+        toggle_act = QtGui.QAction("Показать/скрыть настройки (Tab)", self)
+        toggle_act.setShortcut(QtGui.QKeySequence("Tab"))
+        toggle_act.triggered.connect(self.toggle_controls)
+        self.addAction(toggle_act)
+
+
+    def eventFilter(self, obj, ev):
+        if obj is self.ctrl and ev.type() in (QtCore.QEvent.Type.Resize, QtCore.QEvent.Type.Move, QtCore.QEvent.Type.Show, QtCore.QEvent.Type.Hide):
+            self._reposition_dock_handle()
+        return super().eventFilter(obj, ev)
+
+    def _reposition_dock_handle(self):
+        # ставим хэндл на левую кромку док-панели; если док скрыт — прижимаем к правой кромке окна
+        if self.ctrl.isVisible() and self.ctrl.maximumWidth() > 0:
+            g = self.ctrl.geometry()
+            x = g.left() - self._dock_handle.width() + 1
+            y = g.top() + (g.height() - self._dock_handle.height()) // 2
+            self._dock_handle.move(max(0, x), max(0, y))
+            self._dock_handle.setText("▶")  # <<< "◀": когда панель ОТКРЫТА — стрелка вправо (свернуть)
+            self._dock_handle.show()
+        else:
+            # док скрыт — ставим «в воздухе» у правой кромки окна
+            x = self.width() - self._dock_handle.width() - 2
+            y = (self.height() - self._dock_handle.height()) // 2
+            self._dock_handle.move(max(0, x), max(0, y))
+            self._dock_handle.setText("◀")  # <<< было "▶": когда панель ЗАКРЫТА — стрелка влево (открыть)
+            self._dock_handle.show()
+
+    def resizeEvent(self, e: QtGui.QResizeEvent):
+        super().resizeEvent(e)
+        self._reposition_dock_handle()
+
+    def toggle_controls(self):
+        # считаем, открыта ли панель сейчас
+        is_open = self.ctrl.isVisible() and self.ctrl.maximumWidth() > 0
+
+        # всегда создаём свежую анимацию, чтобы не копились .finished-сигналы
+        try:
+            if hasattr(self, "_dock_anim") and self._dock_anim is not None:
+                self._dock_anim.stop()
+                self._dock_anim.deleteLater()
+        except Exception:
+            pass
+
+        self._dock_anim = QtCore.QPropertyAnimation(self.ctrl, b"maximumWidth", self)
+        self._dock_anim.setDuration(180)
+        self._dock_anim.setEasingCurve(QtCore.QEasingCurve.Type.InOutCubic)
+
+        if is_open:
+            # закрываем
+            self._dock_anim.setStartValue(self.ctrl.width())
+            self._dock_anim.setEndValue(0)
+
+            def _on_close_finished():
+                self.ctrl.setHidden(True)
+                self._reposition_dock_handle()
+
+            self._dock_anim.finished.connect(_on_close_finished)
+        else:
+            # открываем
+            self.ctrl.setHidden(False)
+            self.ctrl.setMaximumWidth(1)
+            self._dock_anim.setStartValue(1)
+            self._dock_anim.setEndValue(360)
+            self._dock_anim.finished.connect(self._reposition_dock_handle)
+
+        self._dock_anim.start()
+
+    def closeEvent(self, event):
+        # сохраним геометрию и состояние доков
+        try:
+            self._settings.setValue("win/geometry", self.saveGeometry())
+            self._settings.setValue("win/state", self.saveState())
+        except Exception:
+            pass
+        # дальше — как было:
+        return super().closeEvent(event)
+
 
     def _on_switch_stream(self, cam_id: str, skey: str):
         spec = CAM_SOURCES.get(cam_id, {})
@@ -123,22 +235,3 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _clear_focus(self):
         self.canvas.set_focus(None)
-
-    def closeEvent(self, event):
-        # корректное завершение фоновых задач
-        try:
-            self.stop_event_threads.set()
-            self.stop_event_proc.set()
-        except Exception:
-            pass
-        try:
-            for g in self.grabbers:
-                g.join(timeout=2)
-        except Exception:
-            pass
-        try:
-            if self.proc is not None:
-                self.proc.join(timeout=3)
-        except Exception:
-            pass
-        return super().closeEvent(event)

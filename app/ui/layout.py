@@ -6,6 +6,37 @@ import cv2
 import numpy as np
 
 
+def _blit_clip(canvas: np.ndarray, tile: np.ndarray, x0: int, y0: int) -> tuple[int,int,int,int] | None:
+    """
+    Кладёт tile на canvas по координатам (x0,y0) с отсечением по границам.
+    Возвращает фактический прямоугольник (x0,y0,x1,y1) на canvas или None, если совсем вне экрана.
+    """
+    H, W = canvas.shape[:2]
+    th, tw = tile.shape[:2]
+
+    # целевой прямоугольник на холсте
+    dst_x0, dst_y0 = x0, y0
+    dst_x1, dst_y1 = x0 + tw, y0 + th
+
+    # полностью вне?
+    if dst_x1 <= 0 or dst_y1 <= 0 or dst_x0 >= W or dst_y0 >= H:
+        return None
+
+    # видимые границы на холсте
+    vis_x0 = max(0, dst_x0); vis_y0 = max(0, dst_y0)
+    vis_x1 = min(W, dst_x1); vis_y1 = min(H, dst_y1)
+
+    # соответствующие срезы на источнике
+    src_x0 = vis_x0 - dst_x0; src_y0 = vis_y0 - dst_y0
+    src_x1 = src_x0 + (vis_x1 - vis_x0); src_y1 = src_y0 + (vis_y1 - vis_y0)
+
+    # если после клиппинга что-то осталось — вставляем
+    if vis_x0 < vis_x1 and vis_y0 < vis_y1:
+        canvas[vis_y0:vis_y1, vis_x0:vis_x1] = tile[src_y0:src_y1, src_x0:src_x1]
+        return (vis_x0, vis_y0, vis_x1, vis_y1)
+    return None
+
+
 def pick_grid(n: int) -> tuple[int, int]:
     """Подбираем сетку: 1,2 -> 1x2; 3-4 -> 2x2; 5-9 -> 3x3; 10-16 -> 4x4."""
     if n <= 1: return 1, 1
@@ -66,7 +97,8 @@ def compose_focus_layout(
     widget_ids: List[str],
     out_size: Tuple[int, int] = (1920, 1080),
     widget_size: Tuple[int, int] = (640, 360),
-) -> tuple[np.ndarray, dict[str, tuple[int,int,int,int]]]:
+    scroll_offset: int = 0,
+) -> tuple[np.ndarray, dict[str, tuple[int,int,int,int]], int]:
     """
     Возвращает (canvas, rects), где rects[cam_id] = (x0,y0,x1,y1) — для хит-тестов мыши.
     Если focus_id задан, показываем крупно эту камеру слева, а справа — колонка миниатюр и виджета.
@@ -87,7 +119,7 @@ def compose_focus_layout(
             r, c = divmod(idx, cols)
             x0, y0 = c * cell_w, r * cell_h
             rects[cam_id] = (x0, y0, x0 + cell_w, y0 + cell_h)
-        return grid, rects
+        return grid, rects, out_h
 
     # с фокусом
     canvas = np.zeros((out_h, out_w, 3), dtype=np.uint8)
@@ -99,39 +131,51 @@ def compose_focus_layout(
     canvas[:, :left_w] = left
     rects[focus_id] = (0, 0, left_w, out_h)
 
-    # правая колонка: фиксированная полоса
+    # правая колонка
     right_x = left_w
     right_w = out_w - left_w
     pad = 12
-    thumb_h = 240  # высота миниатюр камер
-    thumb_w = right_w - pad * 2
+    top_pad = 16           # <<< добавили
+    bottom_pad = 24        # <<< добавили
 
-    # сначала — виджеты фиксированным размером
-    cur_y = pad
+    thumb_w = right_w - pad * 2
+    thumb_h = max(120, int(thumb_w * 9 / 16))  # 16:9
+
+    # стартуем с учетом верхнего «воздуха»
+    cur_y = top_pad - max(0, scroll_offset)    # <<< было: pad - max(0, scroll_offset)
+
+    # 1) виджеты фиксированным размером, НО без дублирования фокуса
     for wid in widget_ids:
+        if wid == focus_id:
+            continue
         frame = frames.get(wid)
-        w_w, w_h = widget_size
+        w_h = thumb_h
         w = fit_into_box(frame, thumb_w, w_h)
-        canvas[cur_y:cur_y + w_h, right_x + pad: right_x + pad + thumb_w] = w
-        rects[wid] = (right_x + pad, cur_y, right_x + pad + thumb_w, cur_y + w_h)
+        y0, x0 = cur_y, right_x + pad
+        y1, x1 = y0 + w_h, x0 + thumb_w
+        if 0 <= y1 and y0 < out_h + thumb_h:
+            placed = _blit_clip(canvas, w, x0, y0)
+            if placed:
+                rects[wid] = placed
         cur_y += w_h + pad
 
-    # затем — миниатюры остальных камер (кроме фокуса и виджетов)
-    for cam_id, frame in frames.items():
-        if cam_id == focus_id or cam_id in widget_ids:
-            continue
-        h = min(thumb_h, max(120, (out_h - cur_y) // 3))
-        thumb = fit_into_box(frame, thumb_w, h)
+
+    # 2) миниатюры камер (кроме фокуса и виджетов), все одинаковой высоты thumb_h
+    other_cam_ids = sorted([cid for cid in frames.keys() if cid != focus_id and cid not in widget_ids])
+    for cam_id in other_cam_ids:
+        frame = frames.get(cam_id)
+        thumb = fit_into_box(frame, thumb_w, thumb_h)
         y0, x0 = cur_y, right_x + pad
-        y1, x1 = y0 + h, x0 + thumb_w
-        if y1 > out_h - pad:
-            break
-        canvas[y0:y1, x0:x1] = thumb
-        rects[cam_id] = (x0, y0, x1, y1)
-        cur_y += h + pad
+        y1, x1 = y0 + thumb_h, x0 + thumb_w
+        if 0 <= y1 and y0 < out_h + thumb_h:
+            placed = _blit_clip(canvas, thumb, x0, y0)
+            if placed:
+                rects[cam_id] = placed
+        cur_y += thumb_h + pad
 
-    return canvas, rects
-
+    # учитываем нижний «воздух»
+    total_height = max(cur_y + bottom_pad, out_h)   # <<< было: max(cur_y + pad, out_h)
+    return canvas, rects, total_height
 
 def compose_two_panel(
     left_frame: Optional[np.ndarray],
