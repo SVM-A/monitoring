@@ -10,11 +10,13 @@ from app.core.constants import CAM_SOURCES
 from app.util.mask import mask_url
 from app.qt.widgets.right_sidebar import RightSidebarDock
 from app.qt.views_state import load_views
+from app.qt.frame_bus import FrameBus
 
 
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self, ui_queue, stop_event_threads, stop_event_proc, grabbers: List, proc,
-                 window_id: str = "view-1", selected_id: Optional[str] = None):
+                 window_id: str = "view-1", selected_id: Optional[str] = None,
+                 frame_bus: Optional[FrameBus] = None):
         super().__init__()
         self.window_id = window_id
         self.setWindowTitle("Кожевническая 18")
@@ -28,8 +30,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setCentralWidget(self.canvas)
 
         # Очереди/сервисные объекты
-        self.ui_queue = ui_queue
-        self.timer = QtCore.QTimer(self); self.timer.setInterval(16); self.timer.timeout.connect(self.poll_ui_queue); self.timer.start()
+        self.ui_queue = ui_queue  # оставим если где-то ещё нужно, но не читаем её здесь
+        self.frame_bus = frame_bus  # общий брокер кадров
+        if self.frame_bus:
+            self.frame_bus.frameReady.connect(self._on_frame_ready)
         self.stop_event_threads = stop_event_threads
         self.stop_event_proc = stop_event_proc
         self.grabbers = grabbers
@@ -43,6 +47,12 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # >>> совместимость со старым кодом (window_manager ожидает .viewsDock)
         self.viewsDock = self.sidebar.views_dock()
+
+        # Привяжем панель «Окна» именно к нашему window_id
+        try:
+            self.viewsDock.set_active_view(self.window_id)
+        except Exception:
+            pass
 
         # Подписки на события «Окна»
         self.sidebar.viewSourceChanged.connect(self._apply_views_to_canvas)
@@ -111,6 +121,11 @@ class MainWindow(QtWidgets.QMainWindow):
             # окно уже утилизировано — игнорируем
             pass
 
+    def _on_frame_ready(self, cam_id: str, frame):
+        # локальное хранилище — своя dict, чтобы не трогать других
+        self.latest[cam_id] = frame if frame is None else frame.copy()
+        self.canvas.update()
+
     def _setup_menu(self):
         menu_view = self.menuBar().addMenu("Вид")
 
@@ -127,22 +142,16 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _apply_views_to_canvas(self, *args):
         """
-        Собирает выбранные источники из ViewsDock и отдаёт их канвасу
-        как «разрешённые к показу» (в указанном порядке).
+        Берём актуальный список выбранных источников из views.json
+        для ТЕКУЩЕГО window_id и отдаём канвасу.
         """
         try:
-            vs = self.sidebar.views_dock().views()  # List[ViewSpec] с .selected_ids
-        except Exception:
             from app.qt.views_state import load_views
             vs = load_views()
-        # Сливаем выбранные списки всех окон (каждое окно независимое, но наше окно
-        # всё равно ограничивает отрисовку одним и тем же списком — это ОК, пока
-        # у нас по одному ViewsDock на MainWindow)
-        selected_ids: list[str] = []
-        for v in vs:
-            if v.id == self.window_id:
-                selected_ids = list(v.selected_ids or [])
-                break
+            cur = next((v for v in vs if v.id == self.window_id), None)
+            selected_ids = list(cur.selected_ids or []) if cur else []
+        except Exception:
+            selected_ids = []
         try:
             self.canvas.set_allowed_ids(selected_ids)
         except Exception:
@@ -157,11 +166,13 @@ class MainWindow(QtWidgets.QMainWindow):
         # локальное окно не обязано реагировать
         pass
 
-    def _on_view_source(self, view_id: str, selected_ids: list[str]):
+    def _on_view_source(self, view_id: str, selected_ids: list):
         w = self._wins.get(view_id)
-        if w:
-            # просто попросим окно пересобрать ограничение для канваса
-            w._apply_views_to_canvas()
+        if not w:
+            return
+        # Раньше мы ставили фокус на selected_ids[0].
+        # Уберём это: только обновляем список в канвасе, фокус пусть остаётся как был.
+        w._apply_views_to_canvas()
 
     def _on_view_added(self, view_id: str):
         # менеджер окон создаст экземпляр. Здесь ничего.

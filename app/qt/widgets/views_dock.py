@@ -207,6 +207,11 @@ class ViewsDock(QtWidgets.QDockWidget):
         return list(self._views)
 
     def set_active_view(self, view_id: str):
-        self._active_id = view_id
-        self._rebuild_views_list()
+        self._active_id = view_id or self._active_id
+        # Обновляем комбо без сигналов, чтобы не затронуть другие окна
+        self._views_list.blockSignals(True)
+        idx = max(0, next((i for i, v in enumerate(self._views) if v.id == self._active_id), 0))
+        self._views_list.setCurrentIndex(idx)
+        self._views_list.blockSignals(False)
+        # Обновляем чекбоксы под выбранное окно
         self._apply_active_to_ui()
