@@ -355,10 +355,7 @@ class WidgetBase(Thread):
                 # === ДАТА: крупно, с чёрной обводкой (для читаемости)
                 day_font = FONT40
                 day_str = str(cur.day)
-                draw.text(
-                    (ix, iy), day_str, fill=COLOR_TEXT, font=day_font,
-                    stroke_width=2, stroke_fill=(0, 0, 0)  # чёрная обводка
-                )
+                draw.text((ix, iy), day_str, fill=COLOR_TEXT, font=day_font, stroke_width=2, stroke_fill=(0, 0, 0))
                 dw = draw.textlength(day_str, font=day_font)
 
                 # Месяц сразу после числа — ВСЕГДА (короткий или полный вариант)
@@ -433,7 +430,8 @@ class WidgetBase(Thread):
                             th = f.size
                             if tw <= iw and th <= center_h:
                                 return f, tw, th, s2
-                        return font_primary, draw.textlength(s), font_primary.size
+                        # <-- тут было без font
+                        return font_primary, draw.textlength(s, font=font_primary), font_primary.size
 
                     fit = fit_font(t_str, tfont)
                     if len(fit) == 4:
@@ -467,7 +465,7 @@ class WidgetBase(Thread):
                 maxw = iw
 
                 # шрифт чипов — крупнее
-                chip_font = FONT22 if hasattr(__builtins__, "True") else FONT20  # просто гарантируем FONT22
+                chip_font = FONT22
 
                 # соберём список чипов: [(icon_key, text_or_None, color), ...]
                 chips: list[tuple[str, str | None, tuple[int, int, int]]] = []
@@ -1011,13 +1009,14 @@ class WidgetBase(Thread):
         rx, ry, rw = right_x_half, content_top, right_w_half
 
         # Заголовок секции
-        hdr = "Погодные условия"
+        hdr = ""
         hdr_w = draw.textlength(hdr, font=FONT28)
         draw.text((rx + (rw - hdr_w) / 2, ry), hdr, fill=COLOR_SUB, font=FONT28)
         ry += FONT28.size + 8
 
         # Собираем человекочитаемый текст (сегодня = index 0)
         anom_text = self.render_anomaly_text(weather, index=0)
+        txt_col = (180, 180, 190) if anom_text.strip() == "Аномалий нет" else COLOR_ALERT
 
         # Перенос по словам и центрирование каждой строки
         lab_font = FONT28
@@ -1037,7 +1036,7 @@ class WidgetBase(Thread):
             lines.append(cur)
 
         # Цвет: если аномалий нет — мягкий серый, иначе — акцент
-        txt_col = (180, 180, 190) if anom_text.strip().lower() == "Стабильная погодые условия" else COLOR_ALERT
+        txt_col = (180, 180, 190) if anom_text.strip().lower() == "" else COLOR_ALERT
 
         for ln in lines:
             tw = draw.textlength(ln, font=lab_font)

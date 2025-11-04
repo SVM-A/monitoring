@@ -92,22 +92,14 @@ def load_cameras(cameras_json: str = None) -> Dict[str, dict]:
             result[cam_id] = {"type": "widget", "widget": spec.get("widget", "").lower()}
             continue
 
-        # базовый (как сейчас)
+        # базовый URL
         url = build_rtsp_for_cam(spec, cam_id)
 
         # дополнительные потоки (необязательно)
         streams_spec = spec.get("streams") or {}
         streams = {}
         for skey, sdef in streams_spec.items():
-            merged = dict(spec) | dict(sdef or {})          # наследуем юзера/пароль/хост/порт/transport
-            streams[skey] = build_rtsp_for_cam(merged, cam_id)
-
-        url = build_rtsp_for_cam(spec, cam_id)
-
-        streams_spec = spec.get("streams") or {}
-        streams = {}
-        for skey, sdef in streams_spec.items():
-            merged = dict(spec) | dict(sdef or {})
+            merged = dict(spec) | dict(sdef or {})  # наследуем логин/пароль/хост/порт/transport
             streams[skey] = build_rtsp_for_cam(merged, cam_id)
 
         # если верхний url пустой/некорректный, а streams есть — берём main/первый
@@ -122,6 +114,7 @@ def load_cameras(cameras_json: str = None) -> Dict[str, dict]:
         if spec.get("split"):
             entry["split"] = spec["split"]  # "h" | "v"
         result[cam_id] = entry
+
     return result
 
 def load_roi(roi_json: str = None) -> Dict[str, Any]:

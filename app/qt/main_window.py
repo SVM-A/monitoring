@@ -4,50 +4,64 @@ from typing import Dict, Optional, List
 import numpy as np
 from PyQt6 import QtCore, QtWidgets, QtGui
 
-from app.core.constants import CAM_SOURCES
 from app.qt.widgets.canvas import CanvasWidget
-from app.qt.widgets.camera_controls import CameraControlDock
 from app.video.ffproxy import FFProxyManager, ProxyParams
 from app.core.constants import CAM_SOURCES
 from app.util.mask import mask_url
+from app.qt.widgets.right_sidebar import RightSidebarDock
+from app.qt.views_state import load_views
 
 
 class MainWindow(QtWidgets.QMainWindow):
-    def __init__(self, ui_queue, stop_event_threads, stop_event_proc, grabbers: List, proc):
+    def __init__(self, ui_queue, stop_event_threads, stop_event_proc, grabbers: List, proc,
+                 window_id: str = "view-1", selected_id: Optional[str] = None):
         super().__init__()
+        self.window_id = window_id
         self.setWindowTitle("Кожевническая 18")
         self.resize(1920, 1080)
 
-        # Хранилище последних кадров по cam_id
+        # Хранилище последних кадров
         self.latest: Dict[str, Optional[np.ndarray]] = {cid: None for cid in CAM_SOURCES.keys()}
 
-        # Центральный виджет-канвас
+        # Канвас (поддерживает фокус и правую колонку миниатюр)  :contentReference[oaicite:3]{index=3}
         self.canvas = CanvasWidget(self.latest)
         self.setCentralWidget(self.canvas)
 
-        # Очередь UI и таймер опроса (без блокировки)
+        # Очереди/сервисные объекты
         self.ui_queue = ui_queue
-        self.timer = QtCore.QTimer(self)
-        self.timer.setInterval(16)  # ~60 Гц максимум
-        self.timer.timeout.connect(self.poll_ui_queue)
-        self.timer.start()
-
-        # Жизненный цикл фоновых потоков/процессов
+        self.timer = QtCore.QTimer(self); self.timer.setInterval(16); self.timer.timeout.connect(self.poll_ui_queue); self.timer.start()
         self.stop_event_threads = stop_event_threads
         self.stop_event_proc = stop_event_proc
         self.grabbers = grabbers
-        # быстрый доступ: cam_id -> grabber
         self._gmap = {g.camera_id: g for g in grabbers if hasattr(g, "camera_id")}
-        self._proxy = FFProxyManager()  # локальный менеджер ffmpeg-прокси
+        self._proxy = FFProxyManager()
+        self.proc = proc
 
-        # док-панель
-        self.ctrl = CameraControlDock(self)
+        # == Единая правая панель (табы «Окна» / «Видео») ==
+        self.sidebar = RightSidebarDock(self)
+        self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, self.sidebar)
 
-        # --- узкая кнопка-«хэндл» на левой грани док-панели ---
+        # >>> совместимость со старым кодом (window_manager ожидает .viewsDock)
+        self.viewsDock = self.sidebar.views_dock()
+
+        # Подписки на события «Окна»
+        self.sidebar.viewSourceChanged.connect(self._apply_views_to_canvas)
+        self.sidebar.viewAdded.connect(self._apply_views_to_canvas)
+        self.sidebar.viewRemoved.connect(self._apply_views_to_canvas)
+        self.sidebar.viewRenamed.connect(lambda *_: None)
+        self.sidebar.viewSelected.connect(lambda *_: None)
+
+        # Видео-кнопки (изнутри вкладки «Видео»)
+        self.sidebar.camera_controls().applyRequested.connect(self._on_apply_video)
+        self.sidebar.camera_controls().streamSwitchRequested.connect(self._on_switch_stream)
+
+        # Следить за показом/скрытием панели — для хэндла
+        self.sidebar.visibilityChanged.connect(self._on_sidebar_visibility)
+          # --- узкая кнопка-«хэндл» на левой грани док-панели ---
         self._dock_handle = QtWidgets.QToolButton(self)
         self._dock_handle.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         self._dock_handle.setAutoRaise(True)
-        self._dock_handle.setFixedSize(16, 48)  # тонкая, «вровень» с кромкой
+        self._dock_handle.setFixedSize(16, 48)
         self._dock_handle.setStyleSheet("""
             QToolButton {
                 background: rgba(0,0,0,80);
@@ -56,62 +70,141 @@ class MainWindow(QtWidgets.QMainWindow):
                 border: 1px solid rgba(255,255,255,40);
             }
         """)
-        self._dock_handle.setText("◀")  # когда панель видна — «свернуть вправо»
+        self._dock_handle.setText("◀")
+        self._dock_handle.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+        self._dock_handle.setAttribute(QtCore.Qt.WidgetAttribute.WA_NoMousePropagation, True)
         self._dock_handle.clicked.connect(self.toggle_controls)
 
-        # следим за изменением геометрии дока, чтобы держать хэндл на кромке
-        self.ctrl.installEventFilter(self)
+        # следим за геометрией единственной панели
+        self.sidebar.installEventFilter(self)
         self._reposition_dock_handle()
+        self._setup_menu()
 
-        self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, self.ctrl)
-        self.ctrl.applyRequested.connect(self._on_apply_video)
-        self.ctrl.streamSwitchRequested.connect(self._on_switch_stream)
-        self.proc = proc
+        # === Начальное ограничение канваса выбранными "окнами" ===
+        self._apply_views_to_canvas()
 
-        # Горячие клавиши (через QtGui.QShortcut)
+
+        # Горячие клавиши + статусбар — как было
         self._setup_shortcuts()
-
-        # Мини-статусбар на будущее
         self.statusBar().showMessage("Ready")
 
-        # == Сохранение геометрии/состояния ==
+        # Настройки окна — уникальные per-window
         self._settings = QtCore.QSettings("MonitoringBazy", "CameraUI")
-        if (geo := self._settings.value("win/geometry")):
+        geo_key = f"{self.window_id}/geometry"
+        st_key = f"{self.window_id}/state"
+        if (geo := self._settings.value(geo_key)):
             self.restoreGeometry(geo)
-        if (state := self._settings.value("win/state")):
+        if (state := self._settings.value(st_key)):
             self.restoreState(state)
 
-        # == Кнопка-«язычок» для сворачивания панели справа ==
-        self._dock_anim = QtCore.QPropertyAnimation(self.ctrl, b"maximumWidth", self)
-        self._dock_anim.setDuration(160)
-        self._dock_anim.setEasingCurve(QtCore.QEasingCurve.Type.InOutCubic)
+        # Применим выбранный источник, если задан
+        if selected_id:
+            self.apply_view_source(selected_id)
 
-        toggle_act = QtGui.QAction("Показать/скрыть настройки (Tab)", self)
-        toggle_act.setShortcut(QtGui.QKeySequence("Tab"))
-        toggle_act.triggered.connect(self.toggle_controls)
-        self.addAction(toggle_act)
+    @QtCore.pyqtSlot(bool)
+    def _on_sidebar_visibility(self, _vis: bool):
+        # Когда панель показывается/скрывается, просто обновляем позицию хэндла.
+        # Слот как bound-method корректно авто-отключится при удалении окна.
+        try:
+            self._reposition_dock_handle()
+        except RuntimeError:
+            # окно уже утилизировано — игнорируем
+            pass
 
+    def _setup_menu(self):
+        menu_view = self.menuBar().addMenu("Вид")
+
+        act_sidebar = QtGui.QAction("Показать боковую панель", self)
+        act_sidebar.triggered.connect(self._ensure_sidebar_visible)
+        menu_view.addAction(act_sidebar)
+
+    def apply_view_source(self, cid: Optional[str]):
+        """Применить выбранный источник в это окно: камера/виджет в фокус слева."""
+        if cid:
+            self.canvas.set_focus(cid)   # канвас сам нарисует фокус + правую колонку
+        else:
+            self.canvas.set_focus(None)
+
+    def _apply_views_to_canvas(self, *args):
+        """
+        Собирает выбранные источники из ViewsDock и отдаёт их канвасу
+        как «разрешённые к показу» (в указанном порядке).
+        """
+        try:
+            vs = self.sidebar.views_dock().views()  # List[ViewSpec] с .selected_ids
+        except Exception:
+            from app.qt.views_state import load_views
+            vs = load_views()
+        # Сливаем выбранные списки всех окон (каждое окно независимое, но наше окно
+        # всё равно ограничивает отрисовку одним и тем же списком — это ОК, пока
+        # у нас по одному ViewsDock на MainWindow)
+        selected_ids: list[str] = []
+        for v in vs:
+            if v.id == self.window_id:
+                selected_ids = list(v.selected_ids or [])
+                break
+        try:
+            self.canvas.set_allowed_ids(selected_ids)
+        except Exception:
+            pass
+
+    # === Сигналы панели «Окна» ===
+    def _on_view_selected(self, view_id: str):
+        # ничего не делаем локально: смена активного окна — для многооконного менеджера
+        pass
+
+    def _on_view_renamed(self, view_id: str, new_name: str):
+        # локальное окно не обязано реагировать
+        pass
+
+    def _on_view_source(self, view_id: str, selected_ids: list[str]):
+        w = self._wins.get(view_id)
+        if w:
+            # просто попросим окно пересобрать ограничение для канваса
+            w._apply_views_to_canvas()
+
+    def _on_view_added(self, view_id: str):
+        # менеджер окон создаст экземпляр. Здесь ничего.
+        pass
+
+    def _on_view_removed(self, view_id: str):
+        # если удалили нас — закрываемся
+        if view_id == self.window_id:
+            self.close()
+
+    def closeEvent(self, event):
+        # сохраняем геометрию/state per-window
+        try:
+            self._settings.setValue(f"{self.window_id}/geometry", self.saveGeometry())
+            self._settings.setValue(f"{self.window_id}/state", self.saveState())
+        except Exception:
+            pass
+        return super().closeEvent(event)
 
     def eventFilter(self, obj, ev):
-        if obj is self.ctrl and ev.type() in (QtCore.QEvent.Type.Resize, QtCore.QEvent.Type.Move, QtCore.QEvent.Type.Show, QtCore.QEvent.Type.Hide):
+        if obj is self.sidebar and ev.type() in (
+            QtCore.QEvent.Type.Resize,
+            QtCore.QEvent.Type.Move,
+            QtCore.QEvent.Type.Show,
+            QtCore.QEvent.Type.Hide
+        ):
             self._reposition_dock_handle()
         return super().eventFilter(obj, ev)
 
     def _reposition_dock_handle(self):
-        # ставим хэндл на левую кромку док-панели; если док скрыт — прижимаем к правой кромке окна
-        if self.ctrl.isVisible() and self.ctrl.maximumWidth() > 0:
-            g = self.ctrl.geometry()
+        if self.sidebar.is_open():
+            g = self.sidebar.geometry()
             x = g.left() - self._dock_handle.width() + 1
             y = g.top() + (g.height() - self._dock_handle.height()) // 2
             self._dock_handle.move(max(0, x), max(0, y))
-            self._dock_handle.setText("▶")  # <<< "◀": когда панель ОТКРЫТА — стрелка вправо (свернуть)
+            self._dock_handle.setText("▶")  # открыта → предлагаем свернуть
             self._dock_handle.show()
         else:
-            # док скрыт — ставим «в воздухе» у правой кромки окна
-            x = self.width() - self._dock_handle.width() - 2
-            y = (self.height() - self._dock_handle.height()) // 2
-            self._dock_handle.move(max(0, x), max(0, y))
-            self._dock_handle.setText("◀")  # <<< было "▶": когда панель ЗАКРЫТА — стрелка влево (открыть)
+            margin = 6
+            x = max(0, self.width() - self._dock_handle.width() - margin)
+            y = max(0, (self.height() - self._dock_handle.height()) // 2)
+            self._dock_handle.move(x, y)
+            self._dock_handle.setText("◀")  # закрыта → предлагаем открыть
             self._dock_handle.show()
 
     def resizeEvent(self, e: QtGui.QResizeEvent):
@@ -119,51 +212,19 @@ class MainWindow(QtWidgets.QMainWindow):
         self._reposition_dock_handle()
 
     def toggle_controls(self):
-        # считаем, открыта ли панель сейчас
-        is_open = self.ctrl.isVisible() and self.ctrl.maximumWidth() > 0
+        # Если вдруг окно в полноэкранном режиме — просто вернём в нормальный
+        if self.windowState() & QtCore.Qt.WindowState.WindowFullScreen:
+            self.showNormal()
 
-        # всегда создаём свежую анимацию, чтобы не копились .finished-сигналы
-        try:
-            if hasattr(self, "_dock_anim") and self._dock_anim is not None:
-                self._dock_anim.stop()
-                self._dock_anim.deleteLater()
-        except Exception:
-            pass
-
-        self._dock_anim = QtCore.QPropertyAnimation(self.ctrl, b"maximumWidth", self)
-        self._dock_anim.setDuration(180)
-        self._dock_anim.setEasingCurve(QtCore.QEasingCurve.Type.InOutCubic)
-
-        if is_open:
-            # закрываем
-            self._dock_anim.setStartValue(self.ctrl.width())
-            self._dock_anim.setEndValue(0)
-
-            def _on_close_finished():
-                self.ctrl.setHidden(True)
-                self._reposition_dock_handle()
-
-            self._dock_anim.finished.connect(_on_close_finished)
+        if self.sidebar.is_open():
+            self.sidebar.animate_close(self)
         else:
-            # открываем
-            self.ctrl.setHidden(False)
-            self.ctrl.setMaximumWidth(1)
-            self._dock_anim.setStartValue(1)
-            self._dock_anim.setEndValue(360)
-            self._dock_anim.finished.connect(self._reposition_dock_handle)
+            self.sidebar.animate_open(self)
+        self._reposition_dock_handle()
 
-        self._dock_anim.start()
-
-    def closeEvent(self, event):
-        # сохраним геометрию и состояние доков
-        try:
-            self._settings.setValue("win/geometry", self.saveGeometry())
-            self._settings.setValue("win/state", self.saveState())
-        except Exception:
-            pass
-        # дальше — как было:
-        return super().closeEvent(event)
-
+    def _ensure_sidebar_visible(self):
+        self.sidebar.ensure_visible()
+        self._reposition_dock_handle()
 
     def _on_switch_stream(self, cam_id: str, skey: str):
         spec = CAM_SOURCES.get(cam_id, {})

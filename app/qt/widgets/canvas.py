@@ -18,6 +18,7 @@ class CanvasWidget(QtWidgets.QWidget):
         self.widget_ids: List[str] = [
             cid for cid, spec in CAM_SOURCES.items() if spec.get("type") == "widget"
         ]
+        self.allowed_ids: Optional[List[str]] = None
         self.last_rects: Dict[str, Tuple[int, int, int, int]] = {}
         self.setMouseTracking(True)
         self.setMinimumSize(1280, 720)
@@ -30,7 +31,6 @@ class CanvasWidget(QtWidgets.QWidget):
         self._sb_drag_offset = 0
 
     # ==== хелперы для "виртуальных" половин ====
-
     def _is_virtual_half(self, cid: str) -> bool:
         return _VSEP in cid and cid.split(_VSEP)[-1] in ("A", "B")
 
@@ -40,32 +40,63 @@ class CanvasWidget(QtWidgets.QWidget):
 
     def _visible_frames(self) -> Dict[str, Optional[np.ndarray]]:
         """
-        Формирует словарь кадров для отрисовки в сетке:
-        - обычные камеры -> как есть;
-        - камеры со split -> подставляем "cam:A" и "cam:B" как две ячейки.
+        Формирует словарь кадров для отрисовки.
+        Если задан self.allowed_ids:
+          - используем их порядок;
+          - поддерживаем виртуальные половинки "cam:A"/"cam:B";
+          - допускаем повтор камер в разных окнах проекта (в рамках одного окна
+            дубли в сетке не поддерживаются из-за уникальности ключей dict).
+        Иначе:
+          - перечисляем все источники из CAM_SOURCES;
+          - split-камеры разбиваем на A/B.
         """
         out: Dict[str, Optional[np.ndarray]] = {}
-        for cid, spec in CAM_SOURCES.items():
-            if spec.get("type") == "widget":
-                # виджеты остаются как есть
-                out[cid] = self.latest.get(cid)
-                continue
 
+        def add_half(key_full: str, base: str, half: str):
+            src = self.latest.get(base)
+            spec = CAM_SOURCES.get(base, {})
+            if isinstance(src, np.ndarray) and src.size > 0 and (spec or {}).get("split") in ("h", "v"):
+                try:
+                    if spec["split"] == "v":
+                        a, b = np.hsplit(src, 2)
+                    else:  # "h"
+                        t, bo = np.vsplit(src, 2)
+                        a, b = t, bo
+                    out[key_full] = a if half == "A" else b
+                    return
+                except Exception:
+                    pass
+            out[key_full] = src
+
+        # Когда список задан — строим только по нему
+        if self.allowed_ids:
+            for aid in self.allowed_ids:
+                # половинка?
+                if _VSEP in aid:
+                    base, part = aid.split(_VSEP, 1)
+                    part = "A" if part.upper().startswith("A") else "B"
+                    add_half(aid, base, part)
+                else:
+                    # обычная камера или виджет
+                    out[aid] = self.latest.get(aid)
+            return out
+
+        # Иначе — как раньше: все источники; split -> A/B
+        for cid, spec in CAM_SOURCES.items():
             frame = self.latest.get(cid)
             split = (spec or {}).get("split")
             if split in ("h", "v") and isinstance(frame, np.ndarray) and frame.size > 0:
                 try:
                     if split == "v":
                         left, right = np.hsplit(frame, 2)
+                        out[f"{cid}{_VSEP}A"] = left
+                        out[f"{cid}{_VSEP}B"] = right
                     else:
                         top, bottom = np.vsplit(frame, 2)
-                        left, right = top, bottom
-                    out[f"{cid}{_VSEP}A"] = left
-                    out[f"{cid}{_VSEP}B"] = right
-                    # исходный cid в сетку не добавляем, чтобы не было третьей ячейки
+                        out[f"{cid}{_VSEP}A"] = top
+                        out[f"{cid}{_VSEP}B"] = bottom
                     continue
                 except Exception:
-                    # если не удалось распилить — показываем целиком
                     pass
             out[cid] = frame
         return out
@@ -249,4 +280,17 @@ class CanvasWidget(QtWidgets.QWidget):
         step = 40 if delta < 0 else -40  # <<< инвертировали знак
         max_scroll = max(0, self._right_total - self.height())
         self._right_scroll = int(min(max(self._right_scroll + step, 0), max_scroll))
+        self.update()
+
+    def set_allowed_ids(self, ids: List[str]):
+        """Ограничивает канвас заданным набором источников (и их порядок).
+        Поддерживает 'cam', 'widget', а также 'cam:A'/'cam:B' (up/down или left/right).
+        """
+        self.allowed_ids = list(ids) if ids else None
+        # Пересоберём список виджетов для правой колонны: берём либо из ids, либо из всех
+        if self.allowed_ids is not None:
+            self.widget_ids = [cid for cid in self.allowed_ids
+                               if (CAM_SOURCES.get(cid) or {}).get("type") == "widget"]
+        else:
+            self.widget_ids = [cid for cid, spec in CAM_SOURCES.items() if spec.get("type") == "widget"]
         self.update()

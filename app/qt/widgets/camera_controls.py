@@ -1,93 +1,101 @@
+# app/qt/widgets/camera_controls.py
 from __future__ import annotations
 from typing import Dict, Optional
-from PyQt6 import QtWidgets, QtCore
+
+from PyQt6 import QtCore, QtWidgets
 
 from app.core.constants import CAM_SOURCES
-from app.video.ffproxy import ProxyParams
-from app.db.camera_registry import CameraSettings
 
 class CameraControlDock(QtWidgets.QDockWidget):
-    applyRequested = QtCore.pyqtSignal(str, dict)     # (cam_id, params)
-    streamSwitchRequested = QtCore.pyqtSignal(str, str)  # (cam_id, stream_key ["main"/"sub"])
+    """Док 'Видео': выбор камеры/потока и параметры прокси (ширина/высота/битрейт/т.д.)."""
 
-    def __init__(self, parent=None):
-        super().__init__("Камера", parent)
+    applyRequested = QtCore.pyqtSignal(str, dict)          # (cam_id, params)
+    streamSwitchRequested = QtCore.pyqtSignal(str, str)    # (cam_id, stream_key)
+
+    def __init__(self, parent: Optional[QtWidgets.QWidget] = None):
+        super().__init__("Видео", parent)
+        self.setObjectName("CameraControlDock")
         self.setAllowedAreas(QtCore.Qt.DockWidgetArea.RightDockWidgetArea)
         self.setFeatures(
-            QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetClosable
-            | QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetMovable
+            QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetMovable
         )
-        self.setMinimumWidth(260)
-        self.setMaximumWidth(360)
 
+        # -------- центральная форма
+        root = QtWidgets.QWidget(self)
+        self.setWidget(root)
+        form = QtWidgets.QFormLayout(root)
+        form.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignLeft)
+        form.setFormAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
 
-        self.setObjectName("CameraControlDock")
-        w = QtWidgets.QWidget(self)
-        self.setWidget(w)
-        lay = QtWidgets.QFormLayout(w)
+        # камера
+        self.cam = QtWidgets.QComboBox(root)
+        self.cam.setSizeAdjustPolicy(QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToContents)
+        for cid, spec in CAM_SOURCES.items():
+            if (spec or {}).get("type") == "widget":
+                continue
+            self.cam.addItem(cid, cid)
+        self.cam.currentIndexChanged.connect(self._on_cam_changed)
+        form.addRow("Камера:", self.cam)
 
-        self.cam = QtWidgets.QComboBox()
-        self.cam.addItems([cid for cid, spec in CAM_SOURCES.items() if spec.get("type") != "widget"])
-        lay.addRow("Камера:", self.cam)
+        # поток
+        self.stream = QtWidgets.QComboBox(root)
+        form.addRow("Поток:", self.stream)
 
-        self.stream = QtWidgets.QComboBox()
-        lay.addRow("Поток:", self.stream)
-
-        self.preset = QtWidgets.QComboBox()
-        lay.addRow("Пресет:", self.preset)
-
-        self.w = QtWidgets.QSpinBox(); self.w.setRange(160, 7680); self.w.setValue(1280)
-        self.h = QtWidgets.QSpinBox(); self.h.setRange(120, 4320); self.h.setValue(720)
-        self.fps = QtWidgets.QSpinBox(); self.fps.setRange(1, 120); self.fps.setValue(25)
-        self.bitrate = QtWidgets.QSpinBox(); self.bitrate.setRange(128, 20000); self.bitrate.setValue(2500)
-        self.gop = QtWidgets.QSpinBox(); self.gop.setRange(1, 400); self.gop.setValue(50)
-        lay.addRow("Ширина:", self.w)
-        lay.addRow("Высота:", self.h)
-        lay.addRow("FPS:", self.fps)
-        lay.addRow("Битрейт (кбит/с):", self.bitrate)
-        lay.addRow("GOP:", self.gop)
-
-        btns = QtWidgets.QHBoxLayout()
-        self.btnApply = QtWidgets.QPushButton("Применить")
-        self.btnSwitch = QtWidgets.QPushButton("Переключить поток")
-        btns.addWidget(self.btnApply); btns.addWidget(self.btnSwitch)
-        box = QtWidgets.QWidget(); box.setLayout(btns)
-        lay.addRow(box)
-
-        self.cam.currentTextChanged.connect(self._refresh_for_cam)
+        # пресеты качества
+        self.preset = QtWidgets.QComboBox(root)
         self.preset.currentIndexChanged.connect(self._apply_preset)
+        form.addRow("Пресет:", self.preset)
+
+        # параметры кодирования/прокси
+        self.w = QtWidgets.QSpinBox(root); self.w.setRange(160, 4096); self.w.setSingleStep(16); self.w.setValue(1280)
+        self.h = QtWidgets.QSpinBox(root); self.h.setRange(120, 4096); self.h.setSingleStep(16); self.h.setValue(720)
+        self.fps = QtWidgets.QSpinBox(root); self.fps.setRange(1, 60); self.fps.setValue(25)
+        self.gop = QtWidgets.QSpinBox(root); self.gop.setRange(1, 240); self.gop.setValue(50)
+        self.bitrate = QtWidgets.QSpinBox(root); self.bitrate.setRange(256, 20000); self.bitrate.setValue(2500)
+        form.addRow("Ширина:", self.w)
+        form.addRow("Высота:", self.h)
+        form.addRow("FPS:", self.fps)
+        form.addRow("GOP:", self.gop)
+        form.addRow("Битрейт (k):", self.bitrate)
+
+        # кнопки
+        btns = QtWidgets.QHBoxLayout()
+        self.btnApply = QtWidgets.QPushButton("Применить прокси")
+        self.btnSwitch = QtWidgets.QPushButton("Переключить поток")
         self.btnApply.clicked.connect(self._emit_apply)
         self.btnSwitch.clicked.connect(self._emit_switch)
+        btns.addWidget(self.btnApply)
+        btns.addWidget(self.btnSwitch)
+        btnw = QtWidgets.QWidget(root); btnw.setLayout(btns)
+        form.addRow(btnw)
 
-        # первичная инициализация
-        self._refresh_for_cam(self.cam.currentText())
+        # первичное наполнение выпадающих списков
+        self._on_cam_changed(0)
 
-    def _refresh_for_cam(self, cam_id: str):
-        spec = CAM_SOURCES.get(cam_id, {})
+    # ---- helpers ----
+
+    def _on_cam_changed(self, _index: int):
+        cid = self.cam.currentData()
+        spec: Dict = CAM_SOURCES.get(cid) or {}
+        # потоки
         self.stream.clear()
         streams = spec.get("streams") or {}
         if streams:
-            self.stream.addItems(list(streams.keys()))
+            for key in streams.keys():
+                self.stream.addItem(key, key)
         else:
-            self.stream.addItem("main")  # фиктивный
+            self.stream.addItem("main", "main")   # фиктивный «main», если дополнительных нет
+
+        # пресеты
         self.preset.clear()
         presets = spec.get("quality_presets") or []
         if presets:
             for p in presets:
                 self.preset.addItem(p.get("label", "?"), p)
         else:
-            self.preset.addItem("—")
-        # подтянуть last settings (если есть)
-        rec = CameraSettings.load(cam_id)
-        if rec and isinstance(rec.data, dict):
-            d = rec.data
-            self.w.setValue(int(d.get("width", self.w.value())))
-            self.h.setValue(int(d.get("height", self.h.value())))
-            self.fps.setValue(int(d.get("fps", self.fps.value())))
-            self.bitrate.setValue(int(d.get("bitrate_kbps", self.bitrate.value())))
-            self.gop.setValue(int(d.get("gop", self.gop.value())))
+            self.preset.addItem("—", None)
 
-    def _apply_preset(self, idx: int):
+    def _apply_preset(self, _idx: int):
         p = self.preset.currentData()
         if not isinstance(p, dict):
             return
@@ -97,16 +105,20 @@ class CameraControlDock(QtWidgets.QDockWidget):
         self.bitrate.setValue(int(p.get("bitrate_kbps", self.bitrate.value())))
         self.gop.setValue(int(p.get("gop", self.gop.value())))
 
+    # ---- emitters ----
+
     def _emit_apply(self):
-        cam_id = self.cam.currentText()
+        cam_id = self.cam.currentData() or self.cam.currentText()
         params = dict(
-            width=self.w.value(), height=self.h.value(),
-            fps=self.fps.value(), gop=self.gop.value(),
+            width=self.w.value(),
+            height=self.h.value(),
+            fps=self.fps.value(),
+            gop=self.gop.value(),
             bitrate_kbps=self.bitrate.value(),
         )
         self.applyRequested.emit(cam_id, params)
 
     def _emit_switch(self):
-        cam_id = self.cam.currentText()
-        stream_key = self.stream.currentText() or "main"
+        cam_id = self.cam.currentData() or self.cam.currentText()
+        stream_key = self.stream.currentData() or self.stream.currentText() or "main"
         self.streamSwitchRequested.emit(cam_id, stream_key)

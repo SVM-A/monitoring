@@ -99,10 +99,7 @@ def get_icon(name: str, size: int = 18) -> Optional[Image.Image]:
         return None
     try:
         if path.suffix.lower() == ".svg":
-            if cairosvg is None:
-                return None
-            png = cairosvg.svg2png(url=str(path), output_width=size, output_height=size)
-            im = Image.open(BytesIO(png)).convert("RGBA")
+            im = _render_svg_to_rgba(str(path), size=size)
         else:
             im = Image.open(path).convert("RGBA")
             if im.size != (size, size):

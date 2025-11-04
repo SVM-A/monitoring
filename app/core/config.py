@@ -180,10 +180,10 @@ class VideoTuning(Settings):
     """
     Технические параметры для видео-подсистемы (прокси и т.п.)
     Можно править в .env, например:
-      FFPROXY_LISTEN_TIMEOUT_S=12
+      FFPROXY_LISTEN_TIMEOUT_S=3
       FFPROXY_BASE_PORT=8554
     """
-    FFPROXY_LISTEN_TIMEOUT_S: float = 12.0   # сколько ждать поднятия RTSP-листенера
+    FFPROXY_LISTEN_TIMEOUT_S: float = 3.0   # сколько ждать поднятия RTSP-листенера
     FFPROXY_BASE_PORT: int = 8554            # базовый порт для RTSP-прокси
 
 

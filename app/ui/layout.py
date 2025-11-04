@@ -135,14 +135,17 @@ def compose_focus_layout(
     right_x = left_w
     right_w = out_w - left_w
     pad = 12
-    top_pad = 16           # <<< добавили
-    bottom_pad = 24        # <<< добавили
+    top_pad = 16
+    bottom_pad = 24
 
     thumb_w = right_w - pad * 2
     thumb_h = max(120, int(thumb_w * 9 / 16))  # 16:9
 
-    # стартуем с учетом верхнего «воздуха»
-    cur_y = top_pad - max(0, scroll_offset)    # <<< было: pad - max(0, scroll_offset)
+    # ВАЖНО:
+    # - 'cur_y' накапливает ЛОГИЧЕСКУЮ высоту контента (без скролла)
+    # - 'scroll' используем только при фактической отрисовке (y0 = cur_y - scroll)
+    scroll = max(0, int(scroll_offset))
+    cur_y = top_pad  # логическая верхняя граница контента
 
     # 1) виджеты фиксированным размером, НО без дублирования фокуса
     for wid in widget_ids:
@@ -151,30 +154,36 @@ def compose_focus_layout(
         frame = frames.get(wid)
         w_h = thumb_h
         w = fit_into_box(frame, thumb_w, w_h)
-        y0, x0 = cur_y, right_x + pad
+
+        y0, x0 = cur_y - scroll, right_x + pad
         y1, x1 = y0 + w_h, x0 + thumb_w
-        if 0 <= y1 and y0 < out_h + thumb_h:
+        # клиппинг внутри _blit_clip; чуть расширяем условие видимости
+        if y1 >= -thumb_h and y0 <= out_h + thumb_h:
             placed = _blit_clip(canvas, w, x0, y0)
             if placed:
                 rects[wid] = placed
-        cur_y += w_h + pad
 
+        cur_y += w_h + pad  # логический приращение высоты контента
 
     # 2) миниатюры камер (кроме фокуса и виджетов), все одинаковой высоты thumb_h
     other_cam_ids = sorted([cid for cid in frames.keys() if cid != focus_id and cid not in widget_ids])
     for cam_id in other_cam_ids:
         frame = frames.get(cam_id)
         thumb = fit_into_box(frame, thumb_w, thumb_h)
-        y0, x0 = cur_y, right_x + pad
+
+        y0, x0 = cur_y - scroll, right_x + pad
         y1, x1 = y0 + thumb_h, x0 + thumb_w
-        if 0 <= y1 and y0 < out_h + thumb_h:
+        if y1 >= -thumb_h and y0 <= out_h + thumb_h:
             placed = _blit_clip(canvas, thumb, x0, y0)
             if placed:
                 rects[cam_id] = placed
+
         cur_y += thumb_h + pad
 
-    # учитываем нижний «воздух»
-    total_height = max(cur_y + bottom_pad, out_h)   # <<< было: max(cur_y + pad, out_h)
+    # Итоговая логическая высота контента (без скролла)
+    content_end = cur_y + bottom_pad
+    total_height = max(content_end, out_h)
+
     return canvas, rects, total_height
 
 def compose_two_panel(
