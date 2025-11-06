@@ -19,7 +19,7 @@
       "onvif": { "mode": "proxy", "host": "192.168.100.149", "port": 80, "user_env": "CAM1_USER", "pass_env": "CAM1_PASS", "profile_token": "Profile_1" },
       "desired": {"mode": "direct", "width":1920,"height":1080,"bitrate_kbps":2500,"fps":25,"gop":50}
     },
-    "entry": {
+    "exit gate": {
       "host": "192.168.100.92",
       "port": 554,
       "user_env": "CAM1_USER",
@@ -38,7 +38,7 @@
       "onvif": { "mode": "proxy", "host": "192.168.100.92", "port": 80, "user_env": "CAM1_USER", "pass_env": "CAM1_PASS", "profile_token": "Profile_1" },
       "desired": {"mode": "direct", "width":1920,"height":1080,"bitrate_kbps":2500,"fps":25,"gop":50}
     },
-    "exit": {
+    "entry gate": {
       "host": "192.168.100.37",
       "port": 554,
       "user_env": "CAM1_USER",
