@@ -12,40 +12,40 @@ VIEWS_PATH = Path(BASE_PATH) / "views.json"
 class ViewSpec:
     id: str
     name: str
-    # Новая модель: список выбранных источников (камер/виджетов/половинок cam:A/cam:B)
+    # Порядок и состав источников (камер/виджетов/половинок cam:A/cam:B)
     selected_ids: Optional[List[str]] = None
+    # Выбранная сетка для окна. "auto" | "2x2" | "3x3" | "1L-2S-bottom-1R" | ...
+    layout: str = "auto"
 
 def _migrate_item(item: dict) -> ViewSpec:
-    """
-    Миграция со старого формата (selected_id: str | null) к новому (selected_ids: list[str]).
-    """
     vid = item.get("id") or "view-1"
     name = item.get("name") or "Окно"
+    # миграция selected_ids
     if "selected_ids" in item and isinstance(item["selected_ids"], list):
         sel = [str(x) for x in item["selected_ids"] if x]
     else:
-        # старый формат: одно поле selected_id
         sid = item.get("selected_id")
         sel = [sid] if isinstance(sid, str) and sid else []
-    return ViewSpec(id=vid, name=name, selected_ids=sel)
+    # миграция layout
+    layout = str(item.get("layout") or "auto")
+    return ViewSpec(id=vid, name=name, selected_ids=sel, layout=layout)
 
 def load_views() -> List[ViewSpec]:
     if not VIEWS_PATH.exists():
-        # дефолт: одно окно без выбранных источников
-        return [ViewSpec(id="view-1", name="Окно 1", selected_ids=[])]
+        return [ViewSpec(id="view-1", name="Окно 1", selected_ids=[], layout="auto")]
     try:
         data = json.loads(VIEWS_PATH.read_text("utf-8"))
         out: List[ViewSpec] = []
         for item in (data or []):
             out.append(_migrate_item(item or {}))
-        return out or [ViewSpec(id="view-1", name="Окно 1", selected_ids=[])]
+        return out or [ViewSpec(id="view-1", name="Окно 1", selected_ids=[], layout="auto")]
     except Exception:
-        return [ViewSpec(id="view-1", name="Окно 1", selected_ids=[])]
+        return [ViewSpec(id="view-1", name="Окно 1", selected_ids=[], layout="auto")]
 
 def save_views(items: List[ViewSpec]) -> None:
     VIEWS_PATH.parent.mkdir(parents=True, exist_ok=True)
     payload = [
-        dict(id=v.id, name=v.name, selected_ids=list(v.selected_ids or []))
+        dict(id=v.id, name=v.name, selected_ids=list(v.selected_ids or []), layout=v.layout)
         for v in items
     ]
     VIEWS_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")

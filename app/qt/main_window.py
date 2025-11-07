@@ -142,18 +142,20 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _apply_views_to_canvas(self, *args):
         """
-        Берём актуальный список выбранных источников из views.json
-        для ТЕКУЩЕГО window_id и отдаём канвасу.
+        Берём актуальный список выбранных источников и выбранную сетку для ТЕКУЩЕГО window_id.
         """
         try:
             from app.qt.views_state import load_views
             vs = load_views()
             cur = next((v for v in vs if v.id == self.window_id), None)
             selected_ids = list(cur.selected_ids or []) if cur else []
+            layout_key = (cur.layout if cur else "auto") or "auto"
         except Exception:
             selected_ids = []
+            layout_key = "auto"
         try:
             self.canvas.set_allowed_ids(selected_ids)
+            self.canvas.set_layout_key(layout_key)
         except Exception:
             pass
 

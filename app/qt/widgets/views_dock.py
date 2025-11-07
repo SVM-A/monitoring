@@ -5,20 +5,112 @@ from PyQt6 import QtCore, QtWidgets, QtGui
 from app.core.constants import CAM_SOURCES
 from app.qt.views_state import ViewSpec, load_views, save_views, next_view_id
 
-# сопоставление ярлыков половинок
 _HALF_LABELS = {
-    "h": ("up", "down"),    # горизонтальный сплит -> верх/низ
-    "v": ("left", "right"), # вертикальный сплит   -> лево/право
+    "h": ("up", "down"),
+    "v": ("left", "right"),
 }
-# суффиксы используемые в Canvas ("A"/"B")
 _HALF_SUFFIX = ("A", "B")
 
+# Доступные сетки по умолчанию — базовый набор
+BASE_LAYOUT_OPTIONS = [
+    ("auto", "Авто (под число)"),
+    ("2x2", "Сетка 2×2"),
+    ("3x3", "Сетка 3×3"),
+    ("1L-2S-bottom-1R", "1 большой слева + 2 снизу + 1 справа"),
+]
+
+def layout_options_for(n: int) -> List[tuple[str,str]]:
+    """
+    Возвращает список (key, title) сеток, подходящих под текущее количество выбранных источников.
+    'auto' — всегда. Поддержка до 16.
+    """
+    opts = [("auto", "Авто (под число)")]
+
+    # базовые компактные
+    if n <= 4:
+        opts += [
+            ("2x2", "Сетка 2×2"),
+            ("spotlight", "Спотлайт (1 большой + справа/снизу)"),
+            ("spotlight-balanced", "L-спотлайт (с балансировкой)"),
+            ("1L-2S-bottom-1R", "1 большой слева + 2 снизу + 1 справа"),
+        ]
+
+    # 5..6 — классические DVR пресеты
+    if 5 <= n <= 6:
+        opts += [
+            ("2x3", "Сетка 2×3"),
+            ("spotlight-balanced", "L-спотлайт (с балансировкой)"),
+            ("dual-spotlight", "2 большие сверху + мелкие внизу"),
+        ]
+
+    # 7..8 — DVR часто «1 большой + 7», «2 большие + мелкие»
+    if 7 <= n <= 8:
+        opts += [
+            ("2x4", "Сетка 2×4"),
+            ("spotlight-balanced", "L-спотлайт (с балансировкой)"),
+            ("dual-spotlight", "2 большие сверху + мелкие внизу"),
+        ]
+
+    # 9 — классическое «3×3», но даём и спотлайт
+    if n == 9:
+        opts += [
+            ("3x3", "Сетка 3×3"),
+            ("spotlight-balanced", "L-спотлайт (с балансировкой)"),
+            ("dual-spotlight", "2 большие сверху + мелкие внизу"),
+        ]
+
+    # 10..16 — обычно «4×4»; альтернативные спотлайты уже мелкие
+    if 10 <= n <= 16:
+        opts += [("4x4", "Сетка 4×4")]
+
+    # уникализируем и сохраняем порядок
+    seen = set(); out = []
+    for k, t in opts:
+        if k not in seen:
+            out.append((k, t)); seen.add(k)
+    return out
+
+class ReorderList(QtWidgets.QListWidget):
+    """Список источников с чекбоксами и внутренним перетаскиванием."""
+    changed = QtCore.pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
+        self.setDragDropMode(QtWidgets.QAbstractItemView.DragDropMode.InternalMove)
+        self.setDefaultDropAction(QtCore.Qt.DropAction.MoveAction)
+        self.setAlternatingRowColors(True)
+        self.model().rowsMoved.connect(lambda *_: self.changed.emit())
+        self.itemChanged.connect(lambda *_: self.changed.emit())
+
+    def add_source_item(self, label: str, sid: str, checked: bool):
+        it = QtWidgets.QListWidgetItem(label)
+        it.setFlags(
+            QtCore.Qt.ItemFlag.ItemIsEnabled
+            | QtCore.Qt.ItemFlag.ItemIsSelectable
+            | QtCore.Qt.ItemFlag.ItemIsDragEnabled
+            | QtCore.Qt.ItemFlag.ItemIsUserCheckable
+        )
+        it.setData(QtCore.Qt.ItemDataRole.UserRole, sid)
+        it.setCheckState(QtCore.Qt.CheckState.Checked if checked else QtCore.Qt.CheckState.Unchecked)
+        self.addItem(it)
+
+    def selected_ids_in_order(self) -> List[str]:
+        out: List[str] = []
+        for i in range(self.count()):
+            it = self.item(i)
+            if it and it.checkState() == QtCore.Qt.CheckState.Checked:
+                sid = it.data(QtCore.Qt.ItemDataRole.UserRole)
+                if sid:
+                    out.append(str(sid))
+        return out
+
 class ViewsDock(QtWidgets.QDockWidget):
-    viewSelected = QtCore.pyqtSignal(str)                # window_id выбран
-    viewRenamed = QtCore.pyqtSignal(str, str)            # window_id, new_name
-    viewSourceChanged = QtCore.pyqtSignal(str, list)     # window_id, selected_ids
-    viewAdded = QtCore.pyqtSignal(str)                   # window_id
-    viewRemoved = QtCore.pyqtSignal(str)                 # window_id
+    viewSelected = QtCore.pyqtSignal(str)
+    viewRenamed = QtCore.pyqtSignal(str, str)
+    viewSourceChanged = QtCore.pyqtSignal(str, list)
+    viewAdded = QtCore.pyqtSignal(str)
+    viewRemoved = QtCore.pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__("Окна", parent)
@@ -55,13 +147,16 @@ class ViewsDock(QtWidgets.QDockWidget):
         self._name_edit.editingFinished.connect(self._on_rename_active)
         self._form.addRow("Название:", self._name_edit)
 
-        # Контейнер с чекбоксами источников
-        self._sources_box = QtWidgets.QWidget(self._inner)
-        self._sources_layout = QtWidgets.QVBoxLayout(self._sources_box)
-        self._sources_layout.setSpacing(2)
-        self._form.addRow("Показывать:", self._sources_box)
+        # Новый селектор сетки
+        self._layout_combo = QtWidgets.QComboBox()
+        self._layout_combo.currentIndexChanged.connect(self._on_layout_changed)
+        self._form.addRow("Сетка:", self._layout_combo)
 
-        # Кнопки добавить/удалить окно
+        # Заменяем вертикальный набор чекбоксов на перетаскиваемый список
+        self._sources_list = ReorderList(self._inner)
+        self._sources_list.changed.connect(self._on_sources_changed)
+        self._form.addRow("Показывать:", self._sources_list)
+
         btns = QtWidgets.QHBoxLayout()
         self._add_btn = QtWidgets.QPushButton("＋")
         self._del_btn = QtWidgets.QPushButton("Удалить")
@@ -71,16 +166,13 @@ class ViewsDock(QtWidgets.QDockWidget):
         btn_box = QtWidgets.QWidget(self._inner); btn_box.setLayout(btns)
         self._form.addRow(btn_box)
 
-        # инициализация
         self._rebuild_views_list()
         self._rebuild_sources()
         self._apply_active_to_ui()
 
-    # блокируем прокрутку наружу
-    def wheelEvent(self, e: QtGui.QWheelEvent):  # type: ignore[override]
+    def wheelEvent(self, e: QtGui.QWheelEvent):  # блокируем прокрутку наружу
         e.accept()
 
-    # ——— helpers ———
     def _rebuild_views_list(self):
         self._views_list.blockSignals(True)
         self._views_list.clear()
@@ -91,67 +183,61 @@ class ViewsDock(QtWidgets.QDockWidget):
         self._views_list.blockSignals(False)
         self._del_btn.setEnabled(len(self._views) > 1)
 
-    def _add_source_checkbox(self, label: str, sid: str) -> QtWidgets.QCheckBox:
-        cb = QtWidgets.QCheckBox(label, self._sources_box)
-        cb.setProperty("sid", sid)  # например "exit", "dual-sky:A", "calclockweather"
-        cb.stateChanged.connect(self._on_sources_changed)
-        self._sources_layout.addWidget(cb)
-        return cb
+    def _add_source_item(self, label: str, sid: str, checked: bool):
+        self._sources_list.add_source_item(label, sid, checked)
 
     def _rebuild_sources(self):
-        # очистка
-        while self._sources_layout.count():
-            it = self._sources_layout.takeAt(0)
-            w = it.widget()
-            if w: w.deleteLater()
-
-        # список «камер и виджетов», дополненный половинками для split-камер
+        self._sources_list.clear()
         items: list[tuple[str, str]] = []  # (sid, label)
         for cid, spec in CAM_SOURCES.items():
             t = (spec or {}).get("type")
             if t == "widget":
                 items.append((cid, f"[виджет] {cid}"))
                 continue
-            # обычная камера целиком
             items.append((cid, cid))
-            # если split — добавляем A/B как up/down (или left/right)
             split = (spec or {}).get("split")
             if split in ("h", "v"):
                 a_lbl, b_lbl = _HALF_LABELS["h" if split == "h" else "v"]
                 items.append((f"{cid}:A", f"{cid} — {a_lbl}"))
                 items.append((f"{cid}:B", f"{cid} — {b_lbl}"))
-
-        # сортировка: виджеты отдельно не поднимаем — просто по label
         items.sort(key=lambda t: t[1].lower())
 
-        # создаём чекбоксы
-        for sid, label in items:
-            self._add_source_checkbox(label, sid)
+        cur = next((v for v in self._views if v.id == self._active_id), self._views[0])
+        selected = list(cur.selected_ids or [])
+        selected_set = set(selected)
 
-        self._sources_layout.addStretch(1)
+        # Сначала добавим выбранные в их текущем порядке, затем — остальные unchecked
+        for sid in selected:
+            label = next((lbl for _sid, lbl in items if _sid == sid), sid)
+            self._add_source_item(label, sid, True)
+        for sid, label in items:
+            if sid not in selected_set:
+                self._add_source_item(label, sid, False)
+
+        # Обновить список сеток под текущее N
+        self._rebuild_layout_options(len(selected), cur.layout)
+
+    def _rebuild_layout_options(self, n: int, current: str):
+        opts = layout_options_for(n)
+        self._layout_combo.blockSignals(True)
+        self._layout_combo.clear()
+        cur_idx = 0
+        for i, (key, title) in enumerate(opts):
+            self._layout_combo.addItem(title, key)
+            if key == (current or "auto"):
+                cur_idx = i
+        self._layout_combo.setCurrentIndex(cur_idx)
+        self._layout_combo.blockSignals(False)
 
     def _apply_active_to_ui(self):
         cur = next((v for v in self._views if v.id == self._active_id), self._views[0])
         self._name_edit.setText(cur.name)
-        # отметить выбранные чекбоксы
-        selected = set(cur.selected_ids or [])
-        for i in range(self._sources_layout.count()):
-            it = self._sources_layout.itemAt(i).widget()
-            if isinstance(it, QtWidgets.QCheckBox):
-                sid = it.property("sid")
-                it.blockSignals(True)
-                it.setChecked(sid in selected)
-                it.blockSignals(False)
+        # пересобрать списки под текущее окно
+        self._rebuild_sources()
 
     def _collect_selected_from_ui(self) -> List[str]:
-        sids: List[str] = []
-        for i in range(self._sources_layout.count()):
-            it = self._sources_layout.itemAt(i).widget()
-            if isinstance(it, QtWidgets.QCheckBox) and it.isChecked():
-                sid = it.property("sid")
-                if sid:
-                    sids.append(str(sid))
-        return sids
+        result = self._sources_list.selected_ids_in_order()
+        return result[:16]  # максимум 16 источников на окно
 
     # ——— handlers ———
     def _on_view_switch(self, idx: int):
@@ -173,17 +259,30 @@ class ViewsDock(QtWidgets.QDockWidget):
             self._rebuild_views_list()
             self.viewRenamed.emit(cur.id, cur.name)
 
-    def _on_sources_changed(self, _state: int):
+    def _on_layout_changed(self, _idx: int):
+        cur = next((v for v in self._views if v.id == self._active_id), None)
+        if not cur:
+            return
+        key = self._layout_combo.currentData() or "auto"
+        if cur.layout != key:
+            cur.layout = key
+            save_views(self._views)
+            # при смене сетки — просто сообщаем об изменении источников (перерисовка окна)
+            self.viewSourceChanged.emit(cur.id, list(cur.selected_ids or []))
+
+    def _on_sources_changed(self):
         cur = next((v for v in self._views if v.id == self._active_id), None)
         if not cur:
             return
         cur.selected_ids = self._collect_selected_from_ui()
         save_views(self._views)
+        # обновить возможные сетки под новое N
+        self._rebuild_layout_options(len(cur.selected_ids or []), cur.layout)
         self.viewSourceChanged.emit(cur.id, list(cur.selected_ids))
 
     def _on_add_view(self):
         vid = next_view_id(self._views)
-        v = ViewSpec(id=vid, name=f"Окно {len(self._views)+1}", selected_ids=[])
+        v = ViewSpec(id=vid, name=f"Окно {len(self._views)+1}", selected_ids=[], layout="auto")
         self._views.append(v)
         save_views(self._views)
         self._rebuild_views_list()
@@ -208,10 +307,8 @@ class ViewsDock(QtWidgets.QDockWidget):
 
     def set_active_view(self, view_id: str):
         self._active_id = view_id or self._active_id
-        # Обновляем комбо без сигналов, чтобы не затронуть другие окна
         self._views_list.blockSignals(True)
         idx = max(0, next((i for i, v in enumerate(self._views) if v.id == self._active_id), 0))
         self._views_list.setCurrentIndex(idx)
         self._views_list.blockSignals(False)
-        # Обновляем чекбоксы под выбранное окно
         self._apply_active_to_ui()
