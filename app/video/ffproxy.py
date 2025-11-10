@@ -9,6 +9,8 @@ import subprocess
 import time
 from dataclasses import dataclass
 from typing import Dict, Optional
+import sys
+from urllib.parse import quote as urlquote
 
 from app.core.config import get_video_tuning, get_debug_flags
 from app.util.mask import mask_url
@@ -108,8 +110,9 @@ class FFProxyManager:
         raise FFProxyError("no free RTSP port found near base_port")
 
     def _build_cmd(self, out_url: str, src_url: str, p: ProxyParams) -> list[str]:
+        ffmpeg_bin = os.environ.get("FFMPEG_PATH", "ffmpeg")
         return [
-            "ffmpeg",
+            ffmpeg_bin,
             "-nostdin",
             "-rtsp_transport", "tcp",
             "-i", src_url,
@@ -123,23 +126,33 @@ class FFProxyManager:
 
     def start(self, cam_id: str, src_url: str, params: ProxyParams) -> str:
         self.stop(cam_id)
+
+        # ВАЖНО: кодируем path для RTSP, чтобы пробелы и прочие символы не ломали URL
+        safe_cam_path = urlquote(cam_id, safe="")
         port = self._alloc_port(cam_id)
-        out_url = f"rtsp://{self.rtsp_host}:{port}/{cam_id}"
+        out_url = f"rtsp://{self.rtsp_host}:{port}/{safe_cam_path}"
+
         cmd = self._build_cmd(out_url, src_url, params)
         print("[ffproxy] starting:", _safe_cmd_for_log(cmd))
 
         debug = get_debug_flags().FFPROXY_DEBUG
-        stderr = None if not debug else subprocess.PIPE
 
-        p = subprocess.Popen(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=stderr,
-            preexec_fn=os.setsid
-        )
+        popen_kwargs = {
+            "stdout": subprocess.DEVNULL,
+            "stderr": (None if not debug else subprocess.PIPE),
+        }
+
+        # Unix: создаём новую процесс-группу через setsid
+        # Windows: создаём новый процесс-группу через CREATE_NEW_PROCESS_GROUP
+        if os.name == "nt":
+            popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            popen_kwargs["preexec_fn"] = os.setsid
+
+        p = subprocess.Popen(cmd, **popen_kwargs)
         self.processes[cam_id] = p
 
-        if p.poll() is not None:
+        if p.poll() is not None:  # ffmpeg завершился мгновенно
             if debug and p.stderr:
                 try:
                     err = p.stderr.read().decode(errors="ignore")[:2000]
@@ -167,13 +180,41 @@ class FFProxyManager:
         self.runtime_urls.pop(cam_id, None)
         if not p:
             return
+
         try:
-            os.killpg(os.getpgid(p.pid), signal.SIGTERM)
+            if os.name == "nt":
+                # Мы запускали с CREATE_NEW_PROCESS_GROUP → можно послать CTRL_BREAK_EVENT
+                try:
+                    p.send_signal(signal.CTRL_BREAK_EVENT)
+                    # немножко подождём мягкого завершения
+                    try:
+                        p.wait(timeout=1.0)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+                # если ещё жив — пробуем terminate/kill
+                if p.poll() is None:
+                    try:
+                        p.terminate()
+                    except Exception:
+                        pass
+                if p.poll() is None:
+                    try:
+                        p.kill()
+                    except Exception:
+                        pass
+            else:
+                # Unix — штатно гасим всю группу
+                try:
+                    os.killpg(os.getpgid(p.pid), signal.SIGTERM)
+                except Exception:
+                    try:
+                        p.terminate()
+                    except Exception:
+                        pass
         except Exception:
-            try:
-                p.terminate()
-            except Exception:
-                pass
+            pass
 
     def restart(self, cam_id: str, src_url: str, params: ProxyParams) -> str:
         self.stop(cam_id)
