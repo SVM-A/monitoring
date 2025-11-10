@@ -62,9 +62,17 @@ def prepare_runtime(cameras_cfg: List[dict]) -> Dict[str, ApplyResult]:
 
     with ThreadPoolExecutor(max_workers=max(2, len(cameras_cfg))) as ex:
         futs = [ex.submit(_apply_one, cam) for cam in cameras_cfg]
-        for f in as_completed(futs):
-            cam_id, res = f.result()
+        with ThreadPoolExecutor(max_workers=max(2, len(cameras_cfg))) as ex:
+            futs = [ex.submit(_apply_one, cam) for cam in cameras_cfg]
+            for f in as_completed(futs, timeout=60):  # общий лимит на волну
+                try:
+                    cam_id, res = f.result(timeout=15)  # отдельный лимит на камеру
+                    results[cam_id] = res
+                    print(f"[bootstrap] OK: {cam_id} -> {res.runtime_url}")
+                except TimeoutError:
+                    print("[bootstrap] TIMEOUT: camera bootstrap took too long for one task, continue…")
+                except Exception as e:
+                    print(f"[bootstrap] ERROR: {e!r} (continue)")
             results[cam_id] = res
-            # тут можно логировать, маскируя пароль
-            # print(f"[bootstrap] {cam_id}: mode={res.mode}, runtime={mask_url(res.runtime_url)}")
+
     return results
