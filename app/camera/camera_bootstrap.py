@@ -1,3 +1,4 @@
+# app/camera/camera_bootstrap.py
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Tuple
 from app.camera.camera_controller import CameraController, ApplyResult
@@ -56,23 +57,21 @@ def prepare_runtime(cameras_cfg: List[dict]) -> Dict[str, ApplyResult]:
         })
         # 2) сохраняем целевые настройки
         CameraSettings.save(cam_id, desired)
-        # 3) применяем (ВАЖНО: три аргумента!)
+        # 3) применяем
         res = controller.apply(cam_id, rtsp, desired)
         return cam_id, res
 
+    # один пулл, один список задач
     with ThreadPoolExecutor(max_workers=max(2, len(cameras_cfg))) as ex:
         futs = [ex.submit(_apply_one, cam) for cam in cameras_cfg]
-        with ThreadPoolExecutor(max_workers=max(2, len(cameras_cfg))) as ex:
-            futs = [ex.submit(_apply_one, cam) for cam in cameras_cfg]
-            for f in as_completed(futs, timeout=60):  # общий лимит на волну
-                try:
-                    cam_id, res = f.result(timeout=15)  # отдельный лимит на камеру
-                    results[cam_id] = res
-                    print(f"[bootstrap] OK: {cam_id} -> {res.runtime_url}")
-                except TimeoutError:
-                    print("[bootstrap] TIMEOUT: camera bootstrap took too long for one task, continue…")
-                except Exception as e:
-                    print(f"[bootstrap] ERROR: {e!r} (continue)")
-            results[cam_id] = res
+        for f in as_completed(futs, timeout=60):
+            try:
+                cam_id, res = f.result(timeout=15)
+                results[cam_id] = res
+                print(f"[bootstrap] OK: {cam_id} -> {res.runtime_url}")
+            except TimeoutError:
+                print("[bootstrap] TIMEOUT: camera bootstrap took too long for one task, continue…")
+            except Exception as e:
+                print(f"[bootstrap] ERROR: {e!r} (continue)")
 
     return results

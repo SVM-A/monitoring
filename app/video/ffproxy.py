@@ -127,7 +127,7 @@ class FFProxyManager:
     def start(self, cam_id: str, src_url: str, params: ProxyParams) -> str:
         self.stop(cam_id)
 
-        # ВАЖНО: кодируем path для RTSP, чтобы пробелы и прочие символы не ломали URL
+        from urllib.parse import quote as urlquote
         safe_cam_path = urlquote(cam_id, safe="")
         port = self._alloc_port(cam_id)
         out_url = f"rtsp://{self.rtsp_host}:{port}/{safe_cam_path}"
@@ -141,15 +141,15 @@ class FFProxyManager:
             "stdout": subprocess.DEVNULL,
             "stderr": (None if not debug else subprocess.PIPE),
         }
-
-        # Unix: создаём новую процесс-группу через setsid
-        # Windows: создаём новый процесс-группу через CREATE_NEW_PROCESS_GROUP
         if os.name == "nt":
             popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
         else:
             popen_kwargs["preexec_fn"] = os.setsid
 
         p = subprocess.Popen(cmd, **popen_kwargs)
+        # >>> ВАЖНО: сохраняем процесс <<<
+        self.processes[cam_id] = p
+
         if p.poll() is not None:
             if debug and p.stderr:
                 try:
@@ -157,15 +157,14 @@ class FFProxyManager:
                     print(f"[ffproxy:{cam_id}] ffmpeg stderr:\n{err}")
                 except Exception:
                     pass
+            self.processes.pop(cam_id, None)
             raise FFProxyError(f"ffmpeg exited immediately for {cam_id} (code={p.returncode})")
 
-        # Порог ожидания — на Windows короче
         listen_timeout = get_video_tuning().FFPROXY_LISTEN_TIMEOUT_S if hasattr(get_video_tuning(),
                                                                                 "FFPROXY_LISTEN_TIMEOUT_S") else 10
         if os.name == "nt":
-            listen_timeout = min(listen_timeout, 6)  # не держим UI дольше ~6с на камеру
+            listen_timeout = min(listen_timeout, 6)
 
-        # Ждём порт с небольшим прогресс-логом
         t0 = time.time()
         while True:
             ready = _wait_port(self.rtsp_host, port, timeout_s=0.5)
@@ -178,12 +177,9 @@ class FFProxyManager:
                         print(f"[ffproxy:{cam_id}] listen timeout, stderr tail:\n{err}")
                     except Exception:
                         pass
-                # мягко завершим процесс и отдадим понятную ошибку
                 self.stop(cam_id)
                 raise FFProxyError(
                     f"RTSP port {self.rtsp_host}:{port} not listening for {cam_id} within {listen_timeout}s")
-
-            # полезный прогресс: видно, что не зависли
             print(f"[ffproxy:{cam_id}] waiting RTSP {self.rtsp_host}:{port} ...")
             time.sleep(0.3)
 
