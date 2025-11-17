@@ -52,12 +52,159 @@ def fit_into_box(frame: np.ndarray, box_w: int, box_h: int) -> np.ndarray:
     return canvas
 
 
+def fit_into_box_with_mode(
+    frame: Optional[np.ndarray],
+    box_w: int,
+    box_h: int,
+    mode: str,
+) -> np.ndarray:
+    """
+    Универсальная обёртка под все режимы.
+
+    mode кодируется так:
+      - 'fit' / 'crop' / 'stretch' — без фиксированного соотношения (по кадру)
+      - 'fit@16:9', 'crop@4:3', 'stretch@win' и т.п.
+
+    Логика:
+      1) Выбираем «внутренний прямоугольник» (target_w, target_h) внутри ячейки:
+         - ratio == ''     → вся ячейка (box_w, box_h)
+         - ratio == 'win'  → тоже вся ячейка (соотношение окна)
+         - ratio == '4:3', '16:9', '16:10' → максимально возможный прямоугольник
+           с этим соотношением, вписанный в ячейку.
+      2) Внутри этого прямоугольника применяем fill_mode:
+         - fit    — вписать кадр с сохранением пропорций (без обрезки)
+         - crop   — заполнить прямоугольник, лишнее обрезать по центру
+         - stretch — растянуть кадр до target_w × target_h (без сохранения пропорций)
+      3) Полученное изображение вклеивается по центру ячейки, вокруг остаётся фон.
+    """
+    # fallback, когда кадра нет
+    if frame is None or (isinstance(frame, np.ndarray) and frame.size == 0):
+        canvas = np.zeros((box_h, box_w, 3), dtype=np.uint8)
+        cv2.rectangle(canvas, (0, 0), (box_w - 1, box_h - 1), (70, 70, 78), 1)
+        return canvas
+
+    fill_mode, ratio_code = _parse_mode(mode)
+    h, w = frame.shape[:2]
+    if h == 0 or w == 0:
+        canvas = np.zeros((box_h, box_w, 3), dtype=np.uint8)
+        cv2.rectangle(canvas, (0, 0), (box_w - 1, box_h - 1), (70, 70, 78), 1)
+        return canvas
+
+    # --- шаг 1: внутренний прямоугольник (target_w, target_h) ---
+    if ratio_code in ("4:3", "16:9", "16:10"):
+        if ratio_code == "4:3":
+            target_ratio = 4.0 / 3.0
+        elif ratio_code == "16:9":
+            target_ratio = 16.0 / 9.0
+        else:
+            target_ratio = 16.0 / 10.0
+
+        box_ratio = box_w / float(box_h)
+        if box_ratio > target_ratio:
+            # окно «слишком широкое» → берём по высоте
+            target_h = box_h
+            target_w = int(target_h * target_ratio)
+        else:
+            target_w = box_w
+            target_h = int(target_w / target_ratio)
+    else:
+        # '' или 'win' — внутренний прямоугольник на всю ячейку
+        target_w, target_h = box_w, box_h
+
+    target_w = max(1, min(target_w, box_w))
+    target_h = max(1, min(target_h, box_h))
+
+    # координаты внутреннего прямоугольника внутри ячейки
+    inner_x0 = (box_w - target_w) // 2
+    inner_y0 = (box_h - target_h) // 2
+
+    canvas = np.zeros((box_h, box_w, 3), dtype=np.uint8)
+
+    # --- шаг 2: заполняем внутренний прямоугольник согласно fill_mode ---
+    if fill_mode == "stretch":
+        # просто растягиваем кадр до target_w × target_h
+        resized = cv2.resize(frame, (target_w, target_h), interpolation=cv2.INTER_AREA)
+        canvas[inner_y0:inner_y0 + target_h, inner_x0:inner_x0 + target_w] = resized
+
+    else:
+        # сохраняем пропорции кадра
+        fx = target_w / float(w)
+        fy = target_h / float(h)
+        if fill_mode == "crop":
+            scale = max(fx, fy)  # заполняем, потом режем
+        else:  # 'fit' или что-то странное → как fit
+            scale = min(fx, fy)  # вписать, без обрезки
+
+        new_w = max(1, int(w * scale))
+        new_h = max(1, int(h * scale))
+        resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+        if fill_mode == "crop":
+            # обрезаем до target_w × target_h по центру
+            x0 = max(0, (new_w - target_w) // 2)
+            y0 = max(0, (new_h - target_h) // 2)
+            crop = resized[y0:y0 + target_h, x0:x0 + target_w]
+            # страховка
+            tile = np.zeros((target_h, target_w, 3), dtype=np.uint8)
+            ch, cw = crop.shape[:2]
+            tile[:ch, :cw] = crop
+        else:
+            # fit: вписать внутрь target_w×target_h
+            tile = np.zeros((target_h, target_w, 3), dtype=np.uint8)
+            off_x = (target_w - new_w) // 2
+            off_y = (target_h - new_h) // 2
+            tile[off_y:off_y + new_h, off_x:off_x + new_w] = resized
+
+        canvas[inner_y0:inner_y0 + target_h, inner_x0:inner_x0 + target_w] = tile
+
+    # рамка по границе ячейки
+    cv2.rectangle(canvas, (0, 0), (box_w - 1, box_h - 1), (70, 70, 78), 1)
+    return canvas
+
+def _parse_mode(mode: str) -> tuple[str, str]:
+    """
+    Разбирает строку режима в (fill_mode, ratio_code).
+
+    fill_mode: 'fit' | 'crop' | 'stretch'
+    ratio_code: '' | 'win' | '4:3' | '16:9' | '16:10'
+
+    Совместимо со старыми значениями:
+      - 'fit' / 'crop' / 'stretch'
+      - '4:3' / '16:9' / '16:10'  → трактуем как 'fit@ratio'
+    """
+    if not mode:
+        return "fit", ""
+
+    m_raw = str(mode).strip()
+    if "@" in m_raw:
+        base_raw, ratio_raw = m_raw.split("@", 1)
+    else:
+        base_raw, ratio_raw = m_raw, ""
+
+    base = base_raw.lower()
+
+    # старые значения: '4:3' / '16:9' / '16:10'
+    if base not in ("fit", "crop", "stretch"):
+        if base_raw in ("4:3", "16:9", "16:10"):
+            base = "fit"
+            ratio_raw = base_raw
+        else:
+            base = "fit"
+
+    ratio = ratio_raw.strip()
+    if ratio not in ("4:3", "16:9", "16:10", "win"):
+        ratio = ""
+
+    return base, ratio
+
 def compose_grid(
     frames: Dict[str, Optional[np.ndarray]],
-    out_size: Tuple[int, int] = (1920, 1080)
+    out_size: Tuple[int, int] = (1920, 1080),
+    aspect_map: Optional[Dict[str, str]] = None,
 ) -> np.ndarray:
     """
     Собирает сетку из frames, УВАЖАЯ порядок ключей в frames (не сортируем).
+    aspect_map: {id -> режим соотношения сторон}
     """
     out_w, out_h = out_size
     ids = list(frames.keys())
@@ -77,7 +224,8 @@ def compose_grid(
     for idx, cam_id in enumerate(ids):
         r, c = divmod(idx, cols)
         frame = frames.get(cam_id)
-        fitted = fit_into_box(frame, cell_w, cell_h)
+        mode = (aspect_map or {}).get(cam_id, "fit")
+        fitted = fit_into_box_with_mode(frame, cell_w, cell_h, mode)
         ok = frame is not None
         annotate(fitted, ok)
         y0, y1 = r * cell_h, (r + 1) * cell_h
@@ -92,7 +240,9 @@ def compose_grid(
 
 def _apply_rects(frames: Dict[str, Optional[np.ndarray]],
                  rects: List[tuple[float,float,float,float]],
-                 out_size: Tuple[int,int]) -> tuple[np.ndarray, dict[str, tuple[int,int,int,int]]]:
+                 out_size: Tuple[int,int],
+                 aspect_map: Optional[Dict[str, str]] = None
+                 ) -> tuple[np.ndarray, dict[str, tuple[int,int,int,int]]]:
     out_w, out_h = out_size
     ids = list(frames.keys())
     canvas = np.zeros((out_h, out_w, 3), dtype=np.uint8)
@@ -102,16 +252,19 @@ def _apply_rects(frames: Dict[str, Optional[np.ndarray]],
         x0 = int(x0n * out_w); y0 = int(y0n * out_h)
         x1 = int(x1n * out_w); y1 = int(y1n * out_h)
         w = max(1, x1 - x0); h = max(1, y1 - y0)
-        fitted = fit_into_box(frames.get(cam_id), w, h)
+        mode = (aspect_map or {}).get(cam_id, "fit")
+        fitted = fit_into_box_with_mode(frames.get(cam_id), w, h, mode)
         placed = _blit_clip(canvas, fitted, x0, y0)
         if placed:
             boxes[cam_id] = placed
     return canvas, boxes
 
+
 def compose_named_layout(
     frames: Dict[str, Optional[np.ndarray]],
     layout_key: str,
     out_size: Tuple[int, int] = (1920, 1080),
+    aspect_map: Optional[Dict[str, str]] = None,
 ) -> tuple[np.ndarray, dict[str, tuple[int,int,int,int]]]:
     """
     Рисует по именованному шаблону (layout_key). Если для данного N нет точного описания —
@@ -121,25 +274,25 @@ def compose_named_layout(
         n = len(frames)
         if 1 <= n <= 9:
             rects = _spotlight_rects(n)
-            return _apply_rects(frames, rects, out_size)
+            return _apply_rects(frames, rects, out_size, aspect_map)
 
     if layout_key == "spotlight-balanced":
         n = len(frames)
         if 1 <= n <= 9:
             rects = _spotlightL_balanced_rects(n)
-            return _apply_rects(frames, rects, out_size)
+            return _apply_rects(frames, rects, out_size, aspect_map)
 
     if layout_key == "dual-spotlight":
         n = len(frames)
         if 2 <= n <= 10:
             rects = _dual_spotlight_rects(n)
-            return _apply_rects(frames, rects, out_size)
+            return _apply_rects(frames, rects, out_size, aspect_map)
 
     n = len(frames)
     scheme = (LAYOUTS.get(layout_key) or {}).get(n)
     if not scheme:
         # fallback: просто сетка с сохранением порядка
-        grid = compose_grid(frames, out_size=out_size)
+        grid = compose_grid(frames, out_size=out_size, aspect_map=aspect_map)
         # расчёт прямоугольников для хит-теста
         out_w, out_h = out_size
         ids = list(frames.keys())
@@ -151,7 +304,8 @@ def compose_named_layout(
             x0, y0 = c * cell_w, r * cell_h
             rects[cam_id] = (x0, y0, x0 + cell_w, y0 + cell_h)
         return grid, rects
-    return _apply_rects(frames, scheme, out_size)
+    return _apply_rects(frames, scheme, out_size, aspect_map)
+
 
 
 def compose_focus_layout(
@@ -161,14 +315,15 @@ def compose_focus_layout(
     out_size: Tuple[int, int] = (1920, 1080),
     widget_size: Tuple[int, int] = (640, 360),
     scroll_offset: int = 0,
+    aspect_map: Optional[Dict[str, str]] = None,
 ) -> tuple[np.ndarray, dict[str, tuple[int,int,int,int]], int]:
     out_w, out_h = out_size
     rects: dict[str, tuple[int,int,int,int]] = {}
 
     # без фокуса — дефолтная сетка по порядку
     if not focus_id:
-        grid = compose_grid(frames, out_size=out_size)
-        ids = list(frames.keys())  # <<< порядок
+        grid = compose_grid(frames, out_size=out_size, aspect_map=aspect_map)
+        ids = list(frames.keys())
         rows, cols = pick_grid(len(ids))
         cell_w, cell_h = out_w // cols, out_h // rows
         for idx, cam_id in enumerate(ids):
@@ -182,7 +337,8 @@ def compose_focus_layout(
 
     left_w = (out_w * 2) // 3
     left_h = out_h
-    left = fit_into_box(frames.get(focus_id), left_w, left_h)
+    focus_mode = (aspect_map or {}).get(focus_id, "fit")
+    left = fit_into_box_with_mode(frames.get(focus_id), left_w, left_h, focus_mode)
     canvas[:, :left_w] = left
     rects[focus_id] = (0, 0, left_w, out_h)
 
@@ -193,7 +349,7 @@ def compose_focus_layout(
     bottom_pad = 24
 
     thumb_w = right_w - pad * 2
-    thumb_h = max(120, int(thumb_w * 9 / 16))  # 16:9
+    thumb_h = max(120, int(thumb_w * 9 / 16))  # базовая высота — как было
 
     scroll = max(0, int(scroll_offset))
     cur_y = top_pad
@@ -205,15 +361,15 @@ def compose_focus_layout(
         if cid not in widget_ids:
             continue
         frame = frames.get(cid)
-        w_h = thumb_h
-        w = fit_into_box(frame, thumb_w, w_h)
+        mode = (aspect_map or {}).get(cid, "fit")
+        w_tile = fit_into_box_with_mode(frame, thumb_w, thumb_h, mode)
         y0, x0 = cur_y - scroll, right_x + pad
-        y1, x1 = y0 + w_h, x0 + thumb_w
+        y1, x1 = y0 + thumb_h, x0 + thumb_w
         if y1 >= -thumb_h and y0 <= out_h + thumb_h:
-            placed = _blit_clip(canvas, w, x0, y0)
+            placed = _blit_clip(canvas, w_tile, x0, y0)
             if placed:
                 rects[cid] = placed
-        cur_y += w_h + pad
+        cur_y += thumb_h + pad
 
     # камеры (не виджеты), тоже по порядку
     for cid in frames.keys():
@@ -222,7 +378,8 @@ def compose_focus_layout(
         if cid in widget_ids:
             continue
         frame = frames.get(cid)
-        thumb = fit_into_box(frame, thumb_w, thumb_h)
+        mode = (aspect_map or {}).get(cid, "fit")
+        thumb = fit_into_box_with_mode(frame, thumb_w, thumb_h, mode)
         y0, x0 = cur_y - scroll, right_x + pad
         y1, x1 = y0 + thumb_h, x0 + thumb_w
         if y1 >= -thumb_h and y0 <= out_h + thumb_h:
@@ -234,6 +391,7 @@ def compose_focus_layout(
     content_end = cur_y + bottom_pad
     total_height = max(content_end, out_h)
     return canvas, rects, total_height
+
 
 
 def _grid_rects(cols: int, rows: int, count: int) -> list[tuple[float, float, float, float]]:
