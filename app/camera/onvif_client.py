@@ -1,4 +1,5 @@
 # app/camera/onvif_client.py (замена файла)
+
 from __future__ import annotations
 import datetime as dt, socket, ssl, re
 from dataclasses import dataclass

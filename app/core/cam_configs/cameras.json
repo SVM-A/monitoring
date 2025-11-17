@@ -66,8 +66,27 @@
       "params": "mode=real&idc=1&ids=1",
       "transport": "tcp",
       "streams": {
-        "main": {"path": "stream",  "params": "mode=real&idc=1&ids=1"},
+        "main": {"path": "realmonitor",  "params": "mode=real&idc=1&ids=1"},
         "sub":  {"path": "stream", "params": "mode=real&idc=1&ids=2"}
+      },
+      "quality_presets": [
+        {"label":"1080p@25 • 2500k", "width":1920,"height":1080,"fps":25,"bitrate_kbps":2500,"gop":50},
+        {"label":"720p@25  • 1500k", "width":1280,"height":720,"fps":25,"bitrate_kbps":1500,"gop":50}
+      ],
+      "onvif": { "mode": "proxy", "host": "192.168.100.37", "port": 80, "user_env": "CAM1_USER", "pass_env": "CAM1_PASS", "profile_token": "Profile_1" },
+      "desired": {"mode": "direct", "width":1920,"height":1080,"bitrate_kbps":2500,"fps":25,"gop":50}
+    },
+    "entry gate falcone": {
+      "host": "192.168.100.147",
+      "port": 554,
+      "user_env": "CAM1_USER",
+      "pass_env": "CAM1_PASS",
+      "protocol": "rtsp",
+      "params": "channel=2&subtype=0",
+      "transport": "tcp",
+      "streams": {
+        "main": {"path": "realmonitor",  "params": "channel=2&subtype=0"},
+        "sub":  {"path": "realmonitor", "params": "channel=2&subtype=1"}
       },
       "quality_presets": [
         {"label":"1080p@25 • 2500k", "width":1920,"height":1080,"fps":25,"bitrate_kbps":2500,"gop":50},
