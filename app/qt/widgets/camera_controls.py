@@ -11,6 +11,8 @@ class CameraControlDock(QtWidgets.QDockWidget):
 
     applyRequested = QtCore.pyqtSignal(str, dict)          # (cam_id, params)
     streamSwitchRequested = QtCore.pyqtSignal(str, str)    # (cam_id, stream_key)
+    recordStartRequested = QtCore.pyqtSignal(str)          # cam_id
+    recordStopRequested = QtCore.pyqtSignal(str)           # cam_id
 
     def __init__(self, parent: Optional[QtWidgets.QWidget] = None):
         super().__init__("Видео", parent)
@@ -58,7 +60,7 @@ class CameraControlDock(QtWidgets.QDockWidget):
         form.addRow("GOP:", self.gop)
         form.addRow("Битрейт (k):", self.bitrate)
 
-        # кнопки
+        # кнопки прокси / потоков
         btns = QtWidgets.QHBoxLayout()
         self.btnApply = QtWidgets.QPushButton("Применить прокси")
         self.btnSwitch = QtWidgets.QPushButton("Переключить поток")
@@ -66,8 +68,24 @@ class CameraControlDock(QtWidgets.QDockWidget):
         self.btnSwitch.clicked.connect(self._emit_switch)
         btns.addWidget(self.btnApply)
         btns.addWidget(self.btnSwitch)
-        btnw = QtWidgets.QWidget(root); btnw.setLayout(btns)
+        btnw = QtWidgets.QWidget(root)
+        btnw.setLayout(btns)
         form.addRow(btnw)
+
+        # --- новые кнопки записи ---
+        self._btn_record_start = QtWidgets.QPushButton("Начать запись")
+        self._btn_record_stop = QtWidgets.QPushButton("Стоп запись")
+
+        self._btn_record_start.clicked.connect(self._emit_record_start)
+        self._btn_record_stop.clicked.connect(self._emit_record_stop)
+
+        rec_row = QtWidgets.QHBoxLayout()
+        rec_row.addWidget(self._btn_record_start)
+        rec_row.addWidget(self._btn_record_stop)
+
+        rec_box = QtWidgets.QWidget(root)
+        rec_box.setLayout(rec_row)
+        form.addRow("Запись:", rec_box)
 
         # первичное наполнение выпадающих списков
         self._on_cam_changed(0)
@@ -122,3 +140,13 @@ class CameraControlDock(QtWidgets.QDockWidget):
         cam_id = self.cam.currentData() or self.cam.currentText()
         stream_key = self.stream.currentData() or self.stream.currentText() or "main"
         self.streamSwitchRequested.emit(cam_id, stream_key)
+
+    def _emit_record_start(self):
+        cam_id = self.cam.currentData() or self.cam.currentText()
+        if cam_id:
+            self.recordStartRequested.emit(cam_id)
+
+    def _emit_record_stop(self):
+        cam_id = self.cam.currentData() or self.cam.currentText()
+        if cam_id:
+            self.recordStopRequested.emit(cam_id)

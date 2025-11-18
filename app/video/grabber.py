@@ -11,6 +11,16 @@ import cv2
 from app.core.config import get_debug_flags
 
 
+try:
+    # Новый API OpenCV 4.x
+    cv2.utils.logging.setLogLevel(cv2.utils.logging.LOG_LEVEL_SILENT)
+except AttributeError:
+    # На всякий случай для старых версий
+    try:
+        cv2.setLogLevel(0)
+    except Exception:
+        pass
+
 class FrameGrabber(Thread):
     def __init__(self, camera_id, src, out_queue: Queue, stop_event: Event,
                  reconnect_delay=5, ui_queue: Optional[queue.Queue]=None, ui_stride: int = 3):

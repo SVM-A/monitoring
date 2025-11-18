@@ -7,6 +7,9 @@ from app.core.cam_configs.config_loader import build_rtsp_for_cam, load_json, BA
 import os
 from pathlib import Path
 
+from app.util.mask import mask_url
+
+
 def _resolve_onvif(spec_onvif: dict | None) -> dict | None:
     if not spec_onvif:
         return None
@@ -68,7 +71,7 @@ def prepare_runtime(cameras_cfg: List[dict]) -> Dict[str, ApplyResult]:
             try:
                 cam_id, res = f.result(timeout=15)
                 results[cam_id] = res
-                print(f"[bootstrap] OK: {cam_id} -> {res.runtime_url}")
+                print(f"[bootstrap] OK: {cam_id} -> {mask_url(res.runtime_url)}")
             except TimeoutError:
                 print("[bootstrap] TIMEOUT: camera bootstrap took too long for one task, continue…")
             except Exception as e:

@@ -137,10 +137,18 @@ class FFProxyManager:
 
         debug = get_debug_flags().FFPROXY_DEBUG
 
+        # stdout глушим всегда, stderr — только если debug включён
         popen_kwargs = {
             "stdout": subprocess.DEVNULL,
-            "stderr": (None if not debug else subprocess.PIPE),
         }
+
+        if debug:
+            # хотим видеть stderr ffmpeg в debug-режиме
+            popen_kwargs["stderr"] = subprocess.PIPE
+        else:
+            # в обычном режиме полностью молчим
+            popen_kwargs["stderr"] = subprocess.DEVNULL
+
         if os.name == "nt":
             popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
         else:

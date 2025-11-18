@@ -14,6 +14,10 @@ from app.qt.frame_bus import FrameBus
 
 
 class MainWindow(QtWidgets.QMainWindow):
+    viewChanged = QtCore.pyqtSignal(str)  # если уже есть — ок
+    recordStartRequested = QtCore.pyqtSignal(str)
+    recordStopRequested = QtCore.pyqtSignal(str)
+
     def __init__(self, ui_queue, stop_event_threads, stop_event_proc, grabbers: List, proc,
                  window_id: str = "view-1", selected_id: Optional[str] = None,
                  frame_bus: Optional[FrameBus] = None):
@@ -47,6 +51,12 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # >>> совместимость со старым кодом (window_manager ожидает .viewsDock)
         self.viewsDock = self.sidebar.views_dock()
+
+        ctrl = self.sidebar.camera_controls()
+        ctrl.applyRequested.connect(self._on_apply_video)
+        ctrl.streamSwitchRequested.connect(self._on_switch_stream)
+        ctrl.recordStartRequested.connect(self._on_record_start)
+        ctrl.recordStopRequested.connect(self._on_record_stop)
 
         # Привяжем панель «Окна» именно к нашему window_id
         try:
@@ -119,6 +129,22 @@ class MainWindow(QtWidgets.QMainWindow):
             self._reposition_dock_handle()
         except RuntimeError:
             # окно уже утилизировано — игнорируем
+            pass
+
+
+    def _on_record_start(self, cam_id: str):
+        # пробрасываем сигнал менеджеру + можно показать статусбар
+        self.recordStartRequested.emit(cam_id)
+        try:
+            self.statusBar().showMessage(f"{cam_id}: запись начата", 3000)
+        except Exception:
+            pass
+
+    def _on_record_stop(self, cam_id: str):
+        self.recordStopRequested.emit(cam_id)
+        try:
+            self.statusBar().showMessage(f"{cam_id}: запись остановлена", 3000)
+        except Exception:
             pass
 
     def _on_frame_ready(self, cam_id: str, frame):

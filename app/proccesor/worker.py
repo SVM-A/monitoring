@@ -28,6 +28,12 @@ def processor_proc(in_queue: Queue, stop_event: MPEvent, db_path: str, roi_confi
         if item is None:  # sentinel для завершения
             break
         camera_id, jpg_bytes = item
+
+        # <<< Фильтр: обрабатывать только камеры, у которых есть ROI >>>
+        if roi_config and camera_id not in roi_config:
+            # просто пропускаем кадры других камер
+            continue
+        # ---------------------------------------------------------------
         # декодируем
         arr = np.frombuffer(jpg_bytes, dtype=np.uint8)
         frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)

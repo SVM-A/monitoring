@@ -2,8 +2,9 @@
 from __future__ import annotations
 from typing import List, Dict, Optional, Tuple
 from PyQt6 import QtCore, QtWidgets, QtGui
-from app.core.constants import CAM_SOURCES
+from app.core.constants import CAM_SOURCES, GLOBAL_ROI
 from app.qt.views_state import ViewSpec, load_views, save_views, next_view_id
+from app.video.recording import all_recordings
 
 _HALF_LABELS = {
     "h": ("up", "down"),
@@ -170,6 +171,10 @@ class ViewsDock(QtWidgets.QDockWidget):
         self._rebuild_sources()
         self._apply_active_to_ui()
 
+    def refresh_sources(self):
+        """Публичный метод: пересобрать список источников (камера/записи)."""
+        self._rebuild_sources()
+
     def wheelEvent(self, e: QtGui.QWheelEvent):  # блокируем прокрутку наружу
         e.accept()
 
@@ -189,24 +194,53 @@ class ViewsDock(QtWidgets.QDockWidget):
     def _rebuild_sources(self):
         self._sources_list.clear()
         items: list[tuple[str, str]] = []  # (sid, label)
+
+        recs = all_recordings()
+        for rec in recs.values():
+            # базовый источник записи
+            label = "[запись] "
+            if rec.started_at and rec.ended_at:
+                label += f"{rec.camera_id} {rec.started_at.strftime('%d.%m %H:%M')}–{rec.ended_at.strftime('%H:%M')}"
+            else:
+                label += f"{rec.camera_id} {rec.path.name}"
+            items.append((rec.id, label))
+
+            # ROI-версия записи, если есть ROI для исходной камеры
+            if rec.camera_id in GLOBAL_ROI:
+                roi_sid = f"{rec.id} [ROI]"
+                roi_label = f"[запись ROI] {rec.camera_id}"
+                items.append((roi_sid, roi_label))
+
         for cid, spec in CAM_SOURCES.items():
             t = (spec or {}).get("type")
             if t == "widget":
+                # обычные виджеты
                 items.append((cid, f"[виджет] {cid}"))
                 continue
+
+            # базовая камера
             items.append((cid, cid))
+
+            # ROI-просмотр для камер с настроенным ROI
+            if cid in GLOBAL_ROI:
+                # здесь id источника: "<camera_id> [ROI]"
+                items.append((f"{cid} [ROI]", f"{cid} — ROI"))
+
+            # половинки составных камер (split A/B)
             split = (spec or {}).get("split")
             if split in ("h", "v"):
                 a_lbl, b_lbl = _HALF_LABELS["h" if split == "h" else "v"]
                 items.append((f"{cid}:A", f"{cid} — {a_lbl}"))
                 items.append((f"{cid}:B", f"{cid} — {b_lbl}"))
+
+        # сортируем по подписи
         items.sort(key=lambda t: t[1].lower())
 
         cur = next((v for v in self._views if v.id == self._active_id), self._views[0])
         selected = list(cur.selected_ids or [])
         selected_set = set(selected)
 
-        # Сначала добавим выбранные в их текущем порядке, затем — остальные unchecked
+        # Сначала добавляем выбранные (в их текущем порядке), потом все остальные
         for sid in selected:
             label = next((lbl for _sid, lbl in items if _sid == sid), sid)
             self._add_source_item(label, sid, True)

@@ -3,12 +3,17 @@ from __future__ import annotations
 from typing import Dict, Tuple, Optional, List
 
 import numpy as np
+import cv2
 from PyQt6 import QtCore, QtGui, QtWidgets
 
-from app.core.constants import CAM_SOURCES
+from app.core.constants import CAM_SOURCES, GLOBAL_ROI
 from app.ui.layout import compose_focus_layout, compose_named_layout
+from app.video.roi import apply_roi
+from app.detector.plate_stub import detect_plate
+from app.video.recording import is_recording_source, next_frame_for, recording_by_id
 
 _VSEP = ":"
+_ROI_SUFFIX = " [ROI]"
 
 class CanvasWidget(QtWidgets.QWidget):
     def __init__(self, latest: Dict[str, Optional[np.ndarray]], parent=None):
@@ -65,7 +70,78 @@ class CanvasWidget(QtWidgets.QWidget):
 
         if self.allowed_ids:
             for aid in self.allowed_ids:
-                if _VSEP in aid:
+                # ----- ROI-просмотр: <source_id> [ROI] -----
+                if aid.endswith(_ROI_SUFFIX):
+                    base_id = aid[:-len(_ROI_SUFFIX)]
+
+                    # ROI для записи
+                    if is_recording_source(base_id):
+                        frame = next_frame_for(base_id)
+                        if frame is None:
+                            out[aid] = None
+                            continue
+
+                        rec = recording_by_id(base_id)
+                        roi_key = rec.camera_id if rec else base_id
+                        roi_conf = GLOBAL_ROI.get(roi_key)
+                        roi_frame = apply_roi(frame, roi_conf)
+
+                        # лёгкий детектор номера поверх ROI
+                        try:
+                            plate, bbox = detect_plate(roi_frame)
+                        except Exception:
+                            plate, bbox = None, None
+
+                        if bbox:
+                            try:
+                                x, y, w, h = map(int, bbox)
+                                cv2.rectangle(
+                                    roi_frame,
+                                    (x, y),
+                                    (x + w, y + h),
+                                    (0, 255, 0),
+                                    2,
+                                )
+                            except Exception:
+                                pass
+
+                        out[aid] = roi_frame
+                        continue
+
+                    # ROI для живой камеры — как у тебя было раньше
+                    src = self.latest.get(base_id)
+                    if isinstance(src, np.ndarray) and src.size > 0:
+                        roi_conf = GLOBAL_ROI.get(base_id)
+                        roi_frame = apply_roi(src, roi_conf)
+                        try:
+                            plate, bbox = detect_plate(roi_frame)
+                        except Exception:
+                            plate, bbox = None, None
+                        if bbox:
+                            try:
+                                x, y, w, h = map(int, bbox)
+                                cv2.rectangle(
+                                    roi_frame,
+                                    (x, y),
+                                    (x + w, y + h),
+                                    (0, 255, 0),
+                                    2,
+                                )
+                            except Exception:
+                                pass
+                        out[aid] = roi_frame
+                    else:
+                        out[aid] = None
+                    continue
+                # --------------------------------------------
+
+                # запись как обычный источник
+                if is_recording_source(aid):
+                    out[aid] = next_frame_for(aid)
+                    continue
+
+                # Половинки (A/B) составных камер
+                if _VSEP in aid and self._is_virtual_half(aid):
                     base, part = aid.split(_VSEP, 1)
                     part = "A" if part.upper().startswith("A") else "B"
                     add_half(aid, base, part)
@@ -73,7 +149,7 @@ class CanvasWidget(QtWidgets.QWidget):
                     out[aid] = self.latest.get(aid)
             return out
 
-        # fallback: все источники проекта
+        # fallback: все источники проекта (как было)
         for cid, spec in CAM_SOURCES.items():
             frame = self.latest.get(cid)
             split = (spec or {}).get("split")

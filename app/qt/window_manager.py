@@ -5,6 +5,7 @@ from PyQt6 import QtWidgets
 from app.qt.main_window import MainWindow
 from app.qt.views_state import load_views, ViewSpec
 from app.qt.frame_bus import FrameBus
+from app.video.recording import RecordingManager
 
 
 class WindowManager(QtWidgets.QWidget):
@@ -15,6 +16,11 @@ class WindowManager(QtWidgets.QWidget):
         super().__init__()
         self.ui_queue = ui_queue
         self.frame_bus = FrameBus(self.ui_queue, parent=self)
+
+        # новый менеджер записей
+        self.rec_mgr = RecordingManager()
+        self.frame_bus.frameReady.connect(self.rec_mgr.on_frame)
+
         self.stop_event_threads = stop_event_threads
         self.stop_event_proc = stop_event_proc
         self.grabbers = grabbers
@@ -39,6 +45,11 @@ class WindowManager(QtWidgets.QWidget):
             self.grabbers, self.proc, window_id=v.id, selected_id=None,
             frame_bus=self.frame_bus
         )
+
+        # записи: пробрасываем из окна в глобальный менеджер
+        w.recordStartRequested.connect(self.rec_mgr.start_recording)
+        w.recordStopRequested.connect(self.rec_mgr.stop_recording)
+
         # Привяжем заголовок и саму панель «Окна» к этому view_id
         w.setWindowTitle(v.name)
         # У каждого MainWindow свой экземпляр ViewsDock, жёстко активируем нужный view

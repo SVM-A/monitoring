@@ -1,6 +1,10 @@
 # main.py
 import argparse
+import logging
+import os
 import queue
+import threading
+from logging.handlers import RotatingFileHandler
 from threading import Event
 from multiprocessing import Process, Queue, Event as MPEvent
 from typing import Tuple
@@ -17,6 +21,49 @@ from app.camera.camera_bootstrap import load_cameras, prepare_runtime
 
 # запуск Qt-приложения
 from app.qt.app import run_qt_app
+
+def redirect_stderr_to_rotating_log(filepath="logs/ffmpeg_stderr.log", max_bytes=10*1024*1024, backup_count=3):
+    """
+    Перенаправляет stderr процесса в лог-файл с ротацией.
+    FFmpeg/OpenCV пишут в fd=2 напрямую → перехватываем через pipe.
+    """
+    # создаем директорию логов
+    os.makedirs(os.path.dirname(filepath), exist_ok=True)
+
+    # создаем пайп
+    r_fd, w_fd = os.pipe()
+
+    # подменяем stderr (fd=2) на write-end пайпа
+    os.dup2(w_fd, 2)
+    os.close(w_fd)
+
+    # настраиваем логгер с ротацией
+    logger = logging.getLogger("ffmpeg-stderr")
+    logger.setLevel(logging.INFO)
+
+    handler = RotatingFileHandler(
+        filepath,
+        maxBytes=max_bytes,
+        backupCount=backup_count,
+        encoding="utf-8"
+    )
+    logger.addHandler(handler)
+
+    # поток-читатель, читает из pipe и пишет в лог
+    def reader():
+        with os.fdopen(r_fd, "rb", buffering=0) as pipe_reader:
+            while True:
+                chunk = pipe_reader.read(1024)
+                if not chunk:
+                    break
+                try:
+                    text = chunk.decode(errors="replace")
+                except Exception:
+                    text = str(chunk)
+                logger.info(text.rstrip())
+
+    t = threading.Thread(target=reader, daemon=True)
+    t.start()
 
 
 def main(selected_cams):
@@ -111,6 +158,12 @@ def main(selected_cams):
 
 
 if __name__ == "__main__":
+    redirect_stderr_to_rotating_log(
+        filepath="logs/ffmpeg_stderr.log",
+        max_bytes=10 * 1024 * 1024,  # 10 МБ
+        backup_count=5  # сколько файлов сохранять
+    )
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--cams", nargs="*", help="cam ids to run, default: all")
     args = parser.parse_args()

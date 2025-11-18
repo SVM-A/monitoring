@@ -88,6 +88,10 @@ class ProjectPathSettings(Settings):
     BASE_TEMPLATES_PATH: Path = BASE_PATH / "app/frontend/templates"
     BASE_PHOTO_PATH: Path = BASE_PATH / "imgs"
     FSM_STORAGE_PATH: Path = BASE_PATH / "bot/fsm-storage"
+    PLATE_CASCADE_PATH: Path = BASE_PATH / "app/detector/cascades"
+    VIDEO_RECORDS_PATH: Path = BASE_PATH / "app/video/records"
+
+
 
 
     @property
@@ -189,6 +193,7 @@ class VideoTuning(Settings):
 
 class OnvifSettings(Settings):
     ONVIF_ENABLE: bool = True   # по умолчанию ONVIF включен
+
 
 @lru_cache()
 def get_onvif_settings() -> OnvifSettings:
@@ -320,6 +325,14 @@ def base_api_user_url() -> str:
 def base_photo_path() -> Path:
     return ProjectPathSettings().BASE_PHOTO_PATH
 
+
+@lru_cache()
+def plate_cascade_path() -> Path:
+    return ProjectPathSettings().PLATE_CASCADE_PATH
+
+@lru_cache()
+def video_records_path() -> Path:
+    return ProjectPathSettings().VIDEO_RECORDS_PATH
 
 @lru_cache()
 def developer_chat_id() -> int:

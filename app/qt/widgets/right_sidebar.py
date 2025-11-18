@@ -29,6 +29,8 @@ class RightSidebarDock(QtWidgets.QDockWidget):
         self.ctrl = CameraControlDock(self)
         self.views = ViewsDock(self)
 
+        self.visibilityChanged.connect(self._on_visibility_changed)
+
         self._views_root = self.views.widget()
         self.views.setParent(None)
         self.ctrl.setParent(None)
@@ -79,3 +81,12 @@ class RightSidebarDock(QtWidgets.QDockWidget):
 
     def views_dock(self) -> ViewsDock:
         return self.views
+
+    def _on_visibility_changed(self, visible: bool):
+        # при каждом открытии обновляем список источников,
+        # чтобы в нём появились свежезаписанные файлы
+        if visible:
+            try:
+                self.views.refresh_sources()
+            except Exception:
+                pass
