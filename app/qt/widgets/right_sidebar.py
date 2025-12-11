@@ -4,10 +4,12 @@ from PyQt6 import QtCore, QtWidgets
 from app.qt.widgets.camera_controls import CameraControlDock
 from app.qt.widgets.views_dock import ViewsDock
 
+
 class RightSidebarDock(QtWidgets.QDockWidget):
     """
     Единая правая панель с табами («Окна»/«Видео») без крестика.
     """
+
     viewSelected = QtCore.pyqtSignal(str)
     viewRenamed = QtCore.pyqtSignal(str, str)
     viewSourceChanged = QtCore.pyqtSignal(str, list)  # список выбранных источников

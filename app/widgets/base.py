@@ -13,7 +13,7 @@ import numpy as np
 import requests
 from PIL import Image, ImageDraw, ImageFont
 
-from app.core.constants import (
+from app.core.config_cams import (
     RU_MONTHS,
     RU_MONTHS_SHORT,
     RU_WD,
@@ -29,14 +29,12 @@ from app.core.constants import (
     COLOR_GRID,
     CLOCK_NORMAL,
     CLOCK_WEEKEND,
-    CLOCK_HOLIDAY, BADGE_TEXT, BADGE_BG, COLOR_TEMP, WX_ICON_RAIN_HEAVY, BADGE_RAIN_HIGH, WX_ICON_RAIN_LIGHT,
-    BADGE_RAIN, WX_ICON_DRY, WX_ICON_WIND, BADGE_WIND, RAIN_ALERT_MM,
+    CLOCK_HOLIDAY, BADGE_TEXT, BADGE_BG, COLOR_TEMP, BADGE_RAIN_HIGH, BADGE_RAIN, BADGE_WIND, RAIN_ALERT_MM,
 )
-from app.ui.design_system import DS
-from app.ui.icons import get_icon
-from app.ui.text import (
-    FONT12, FONT14, FONT16, FONT18, FONT20, FONT22, FONT24, FONT28, FONT32,
-    draw_wrapped_text, FONT40, FONT48
+from app.ui.designs import DS
+from app.ui.designs import (
+    FONT16, FONT18, FONT20, FONT22, FONT24, FONT28, FONT32,
+    draw_wrapped_text, FONT40, FONT48, get_icon
 )
 
 

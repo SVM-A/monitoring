@@ -3,24 +3,22 @@ import argparse
 import logging
 import os
 import queue
+import sys
 import threading
 from logging.handlers import RotatingFileHandler
 from threading import Event
 from multiprocessing import Process, Queue, Event as MPEvent
 from typing import Tuple
 import numpy as np
-from pathlib import Path
+from PyQt6 import QtWidgets
 
-
-from app.core.constants import DB_PATH_DETECTION, MAX_QUEUE_SIZE, CAM_SOURCES, GLOBAL_ROI
-from app.db.utils import init_db
+from app.core.config_cams import DB_PATH_DETECTION, MAX_QUEUE_SIZE, CAM_SOURCES, GLOBAL_ROI
+from app.db.camera_registry import init_db
 from app.proccesor.worker import processor_proc
+from app.qt.window_manager import WindowManager
 from app.util.mask import mask_url
-from app.video.grabber import FrameGrabber
+from app.video.ffproxy import FrameGrabber
 from app.camera.camera_bootstrap import load_cameras, prepare_runtime
-
-# запуск Qt-приложения
-from app.qt.app import run_qt_app
 
 def redirect_stderr_to_rotating_log(filepath="logs/ffmpeg_stderr.log", max_bytes=10*1024*1024, backup_count=3):
     """
@@ -148,13 +146,18 @@ def main(selected_cams):
     proc.start()
 
     # 5) Запуск Qt
-    run_qt_app(
+    qt_app = QtWidgets.QApplication(sys.argv)
+
+    manager = WindowManager(
         ui_queue=ui_queue,
         stop_event_threads=stop_event_threads,
         stop_event_proc=stop_event_proc,
         grabbers=grabbers,
-        proc=proc
+        proc=proc,
     )
+    manager.boot()
+
+    sys.exit(qt_app.exec())
 
 
 if __name__ == "__main__":

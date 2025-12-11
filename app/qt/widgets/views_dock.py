@@ -1,10 +1,10 @@
 # app/qt/widgets/views_dock.py
 from __future__ import annotations
-from typing import List, Dict, Optional, Tuple
+from typing import List
 from PyQt6 import QtCore, QtWidgets, QtGui
-from app.core.constants import CAM_SOURCES, GLOBAL_ROI
-from app.qt.views_state import ViewSpec, load_views, save_views, next_view_id
+from app.core.config_cams import CAM_SOURCES, GLOBAL_ROI
 from app.video.recording import all_recordings
+from app.qt.runtime import ViewSpec, load_views, save_views, next_view_id
 
 _HALF_LABELS = {
     "h": ("up", "down"),

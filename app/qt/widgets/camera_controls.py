@@ -4,7 +4,7 @@ from typing import Dict, Optional
 
 from PyQt6 import QtCore, QtWidgets
 
-from app.core.constants import CAM_SOURCES
+from app.core.config_cams import CAM_SOURCES
 
 class CameraControlDock(QtWidgets.QDockWidget):
     """Док 'Видео': выбор камеры/потока и параметры прокси (ширина/высота/битрейт/т.д.)."""

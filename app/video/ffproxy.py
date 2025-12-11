@@ -2,19 +2,25 @@
 from __future__ import annotations
 
 import os
+import cv2
 import shlex
 import signal
 import socket
 import subprocess
 import time
-from dataclasses import dataclass
+import queue
+import numpy as np
 from typing import Dict, Optional
-import sys
-from urllib.parse import quote as urlquote
+from dataclasses import dataclass
+from multiprocessing import Queue
+from threading import Thread, Event
+
 
 from app.core.config import get_video_tuning, get_debug_flags
 from app.util.mask import mask_url
 
+
+# --ffproxy--
 
 def _safe_cmd_for_log(cmd: list[str]) -> str:
     out = []
@@ -241,3 +247,215 @@ class FFProxyManager:
 
     def get_runtime_url(self, cam_id: str) -> Optional[str]:
         return self.runtime_urls.get(cam_id)
+
+
+# --grabber--
+
+
+try:
+    # Новый API OpenCV 4.x
+    cv2.utils.logging.setLogLevel(cv2.utils.logging.LOG_LEVEL_SILENT)
+except AttributeError:
+    # На всякий случай для старых версий
+    try:
+        cv2.setLogLevel(0)
+    except Exception:
+        pass
+
+class FrameGrabber(Thread):
+    def __init__(self, camera_id, src, out_queue: Queue, stop_event: Event,
+                 reconnect_delay=5, ui_queue: Optional[queue.Queue]=None, ui_stride: int = 3):
+        super().__init__(daemon=True)
+        self.camera_id = camera_id
+        self.src = src
+        self.out_queue = out_queue          # в процесс-обработчик (JPEG bytes)
+        self.stop_event = stop_event
+        self.reconnect_delay = reconnect_delay
+        self.cap = None
+        self.ui_queue = ui_queue            # локальная очередь для отрисовки (numpy кадры)
+        self.ui_stride = ui_stride          # каждый N-й кадр кидать в UI (снижаем нагрузку)
+        self._frame_idx = 0
+        self._pending_src = None
+        self._switch_needed = False
+
+    def set_source(self, new_src: str):
+        """Запросить смену источника (на прокси/обратно)."""
+        self._pending_src = new_src
+        self._switch_needed = True
+
+    def _switch_capture(self):
+        """Аккуратно переключить cap на новый URL, избегая «чёрного экрана»."""
+        import cv2
+        new_cap = cv2.VideoCapture(self._pending_src, cv2.CAP_FFMPEG)
+        if not new_cap or not new_cap.isOpened():
+            new_cap = cv2.VideoCapture(self._pending_src)
+            if not new_cap or not new_cap.isOpened():
+                print(f"[grabber] cannot switch to new src: {self._pending_src}")
+                self._pending_src = None
+                self._switch_needed = False
+                return
+        if getattr(self, "cap", None):
+            try:
+                self.cap.release()
+            except Exception:
+                pass
+        self.cap = new_cap
+        self.src = self._pending_src
+        self._pending_src = None
+        self._switch_needed = False
+        print(f"[grabber] switched to: {self.src}")
+
+    def open_capture(self):
+        self.cap = cv2.VideoCapture(self.src, cv2.CAP_FFMPEG)
+        if not self.cap or not self.cap.isOpened():
+            self.cap = cv2.VideoCapture(self.src)
+
+    def run(self):
+        while not self.stop_event.is_set():
+            try:
+                if self.cap is None or not self.cap.isOpened():
+                    self.open_capture()
+                    if not self.cap or not self.cap.isOpened():
+                        print(f"[{self.camera_id}] can't open stream, retry in {self.reconnect_delay}s")
+                        time.sleep(self.reconnect_delay)
+                        continue
+                    self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                if self._switch_needed and self._pending_src:
+                    self._switch_capture()
+                ret, frame = self.cap.read()
+                if not ret or frame is None:
+                    print(f"[{self.camera_id}] frame read failed, reconnecting...")
+                    self.cap.release()
+                    self.cap = None
+                    time.sleep(self.reconnect_delay)
+                    continue
+                if get_debug_flags().GRABBER_DEBUG:
+                    print(f"[{self.camera_id}] frame ok, enqueue to UI (every {self.ui_stride})")
+                # 1) в процесс — JPEG
+                ok, encoded = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+                if ok:
+                    jpg_bytes = encoded.tobytes()
+                    try:
+                        self.out_queue.put_nowait((self.camera_id, jpg_bytes))
+                    except:
+                        pass
+
+                # 2) в UI — сырой кадр (раз в ui_stride кадров)
+                self._frame_idx += 1
+                if self.ui_queue is not None and (self._frame_idx % self.ui_stride == 0):
+                    try:
+                        self.ui_queue.put_nowait((self.camera_id, frame))
+                    except:
+                        # если переполнена — просто пропускаем
+                        pass
+
+            except Exception as e:
+                print(f"[{self.camera_id}] grabber exception:", e)
+                time.sleep(self.reconnect_delay)
+
+        if self.cap:
+            self.cap.release()
+        print(f"[{self.camera_id}] grabber stopped")
+
+
+# --roi--
+
+def _apply_rect(frame, conf):
+    x, y, w, h = conf.get("rect", [0, 0, frame.shape[1], frame.shape[0]])
+    x = int(max(0, x))
+    y = int(max(0, y))
+    w = int(max(1, w))
+    h = int(max(1, h))
+    x2 = min(frame.shape[1], x + w)
+    y2 = min(frame.shape[0], y + h)
+    return frame[y:y2, x:x2]
+
+
+def _apply_poly(frame, conf):
+    poly = np.array(
+        conf.get(
+            "poly",
+            [
+                [0, 0],
+                [frame.shape[1], 0],
+                [frame.shape[1], frame.shape[0]],
+                [0, frame.shape[0]],
+            ],
+        ),
+        dtype=np.int32,
+    )
+    mask = np.zeros(frame.shape[:2], dtype=np.uint8)
+    cv2.fillPoly(mask, [poly], 255)
+    masked = cv2.bitwise_and(frame, frame, mask=mask)
+    return masked
+
+
+def apply_roi(frame, roi_conf):
+    """
+    Возвращает кадр после применения ROI.
+
+    Поддерживаем форматы:
+      {
+        "type": "rect",
+        "rect": [x, y, w, h]
+      }
+
+      {
+        "type": "poly",
+        "poly": [[x1,y1], [x2,y2], ...]
+      }
+
+      {
+        "type": "multi",
+        "zones": [
+          {"type": "rect", ...},
+          {"type": "poly", ...},
+          ...
+        ]
+      }
+
+    Для multi: строим общую маску по всем зонам и оставляем только их.
+    """
+    if frame is None or frame.size == 0:
+        return frame
+    if not roi_conf:
+        return frame
+
+    t = roi_conf.get("type")
+
+    # Обычные случаи
+    if t == "rect":
+        return _apply_rect(frame, roi_conf)
+    if t == "poly":
+        return _apply_poly(frame, roi_conf)
+
+    # Несколько зон
+    if t == "multi":
+        zones = roi_conf.get("zones") or []
+        if not zones:
+            return frame
+
+        mask = np.zeros(frame.shape[:2], dtype=np.uint8)
+
+        for z in zones:
+            z_type = z.get("type")
+            if z_type == "rect":
+                x, y, w, h = z.get("rect", [0, 0, frame.shape[1], frame.shape[0]])
+                x = int(max(0, x))
+                y = int(max(0, y))
+                w = int(max(1, w))
+                h = int(max(1, h))
+                x2 = min(frame.shape[1], x + w)
+                y2 = min(frame.shape[0], y + h)
+                cv2.rectangle(mask, (x, y), (x2, y2), 255, thickness=-1)
+            elif z_type == "poly":
+                poly = np.array(z.get("poly", []), dtype=np.int32)
+                if poly.size == 0:
+                    continue
+                cv2.fillPoly(mask, [poly], 255)
+
+        masked = cv2.bitwise_and(frame, frame, mask=mask)
+        return masked
+
+    # На всякий случай – если тип неизвестен
+    return frame

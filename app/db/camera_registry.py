@@ -1,6 +1,6 @@
 # app/db/camera_registry.py
 # Lightweight registry/DAO for camera capabilities, settings, and runtime applied state.
-# Uses sqlite3 directly, reads DB_PATH from constants.py.
+# Uses sqlite3 directly, reads DB_PATH from config_cams.py.
 from __future__ import annotations
 
 import json
@@ -10,8 +10,34 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from app.core.constants import DB_PATH_CAMERAS
+from app.core.config_cams import DB_PATH_CAMERAS
+from app.core.config_cams import DB_PATH_DETECTION
 
+
+
+def init_db(path=DB_PATH_DETECTION):
+    conn = sqlite3.connect(path, check_same_thread=False)
+    cur = conn.cursor()
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS detections (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        camera_id TEXT,
+        timestamp TEXT,
+        plate TEXT,
+        bbox TEXT,
+        extra TEXT
+    )
+    """)
+    conn.commit()
+    return conn
+
+def save_detection(conn, camera_id, plate, bbox=None, extra=None):
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO detections (camera_id, timestamp, plate, bbox, extra) VALUES (?, ?, ?, ?, ?)",
+        (camera_id, datetime.utcnow().isoformat(), plate, json.dumps(bbox), json.dumps(extra))
+    )
+    conn.commit()
 
 SCHEMA = [
     """
@@ -131,3 +157,6 @@ class CameraRuntime:
                 (camera_id, payload, _now_iso())
             )
             c.commit()
+
+
+

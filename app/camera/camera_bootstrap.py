@@ -3,7 +3,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Tuple
 from app.camera.camera_controller import CameraController, ApplyResult
 from app.db.camera_registry import CameraCapabilities, CameraSettings
-from app.core.cam_configs.config_loader import build_rtsp_for_cam, load_json, BASE_DIR as CAMCFG_BASE
+from app.core.config_cams import build_rtsp_for_cam, load_json, BASE_DIR as CAMCFG_BASE
 import os
 from pathlib import Path
 

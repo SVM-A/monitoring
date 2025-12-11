@@ -6,9 +6,9 @@ import numpy as np
 import cv2
 from PyQt6 import QtCore, QtGui, QtWidgets
 
-from app.core.constants import CAM_SOURCES, GLOBAL_ROI
+from app.core.config_cams import CAM_SOURCES, GLOBAL_ROI, PLATE_DETECTION_CAMERAS
 from app.ui.layout import compose_focus_layout, compose_named_layout
-from app.video.roi import apply_roi
+from app.video.ffproxy import apply_roi
 from app.detector.plate_stub import detect_plate
 from app.video.recording import is_recording_source, next_frame_for, recording_by_id
 
@@ -86,6 +86,12 @@ class CanvasWidget(QtWidgets.QWidget):
                         roi_conf = GLOBAL_ROI.get(roi_key)
                         roi_frame = apply_roi(frame, roi_conf)
 
+                        # Если для этой камеры детекция номеров не включена —
+                        # просто показываем ROI без распознавания.
+                        if roi_key not in PLATE_DETECTION_CAMERAS:
+                            out[aid] = roi_frame
+                            continue
+
                         # лёгкий детектор номера поверх ROI
                         try:
                             plate, bbox = detect_plate(roi_frame)
@@ -113,6 +119,12 @@ class CanvasWidget(QtWidgets.QWidget):
                     if isinstance(src, np.ndarray) and src.size > 0:
                         roi_conf = GLOBAL_ROI.get(base_id)
                         roi_frame = apply_roi(src, roi_conf)
+
+                        # Камера может иметь ROI, но детекция номеров для неё отключена.
+                        if base_id not in PLATE_DETECTION_CAMERAS:
+                            out[aid] = roi_frame
+                            continue
+
                         try:
                             plate, bbox = detect_plate(roi_frame)
                         except Exception:

@@ -1,10 +1,46 @@
-# app/qt/views_state.py
+# app/qt/runtime.py
 from __future__ import annotations
-from dataclasses import dataclass
-from typing import List, Optional
+
 import json
+import sys
+from dataclasses import dataclass
 from pathlib import Path
+
+from PyQt6 import QtWidgets, QtCore
+from typing import Dict, Optional, List
+import queue as pyqueue
+import numpy as np
+
 from app.core.config import BASE_PATH
+
+class FrameBus(QtCore.QObject):
+    """
+    Единый брокер кадров: вычитывает ui_queue один раз и рассылает кадры всем подписчикам.
+    """
+    frameReady = QtCore.pyqtSignal(str, object)  # camera_id, np.ndarray
+
+    def __init__(self, ui_queue: pyqueue.Queue, parent: Optional[QtCore.QObject] = None):
+        super().__init__(parent)
+        self.ui_queue = ui_queue
+        self.latest: Dict[str, np.ndarray] = {}
+        self._timer = QtCore.QTimer(self)
+        self._timer.setInterval(16)  # ~60 FPS тик
+        self._timer.timeout.connect(self._poll_ui_queue)
+        self._timer.start()
+
+    def _poll_ui_queue(self):
+        # Считываем несколько элементов за тик, чтобы не отставать
+        for _ in range(8):
+            try:
+                cam_id, frame = self.ui_queue.get_nowait()
+            except Exception:
+                break
+            # Храним последний кадр и шлём сигнал всем окнам
+            self.latest[cam_id] = frame
+            self.frameReady.emit(cam_id, frame)
+
+    def get_latest(self, cam_id: str):
+        return self.latest.get(cam_id)
 
 VIEWS_PATH = Path(BASE_PATH) / "views.json"
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 import datetime as dt, socket, ssl, re
 from dataclasses import dataclass
-from typing import Optional, Tuple, Iterable, List
+from typing import Optional, Tuple, Iterable
 from urllib.parse import urlunsplit, urlsplit
 import http.client, hashlib, base64, os
 
