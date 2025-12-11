@@ -162,6 +162,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.latest[cam_id] = frame if frame is None else frame.copy()
         self.canvas.update()
 
+
     def _setup_menu(self):
         menu_view = self.menuBar().addMenu("Вид")
 
