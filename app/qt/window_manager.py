@@ -5,7 +5,8 @@ import numpy as np
 from PyQt6 import QtCore, QtWidgets, QtGui
 
 from app.qt.widgets.canvas import CanvasWidget
-from app.video.ffproxy import FFProxyManager, ProxyParams
+from app.video.recording import all_recordings
+from app.video.ffproxy import FFProxyManager, ProxyParams, FrameGrabber
 from app.core.config_cams import CAM_SOURCES
 from app.util.mask import mask_url
 from app.qt.runtime import ProcEventBus
@@ -204,8 +205,10 @@ class MainWindow(QtWidgets.QMainWindow):
         w = self._wins.get(view_id)
         if not w:
             return
-        # Раньше мы ставили фокус на selected_ids[0].
-        # Уберём это: только обновляем список в канвасе, фокус пусть остаётся как был.
+
+        for sid in (selected_ids or []):
+            self.ensure_source_running(sid)
+
         w._apply_views_to_canvas()
 
     def _on_view_added(self, view_id: str):
@@ -348,9 +351,10 @@ class WindowManager(QtWidgets.QWidget):
     Простой менеджер: держит ссылку на все MainWindow и следит за списком ViewSpec.
     """
 
-    def __init__(self, ui_queue, plate_events_queue, stop_event_threads, stop_event_proc, grabbers, proc):
+    def __init__(self, ui_queue, frame_queue, plate_events_queue, stop_event_threads, stop_event_proc, grabbers, proc):
         super().__init__()
         self.ui_queue = ui_queue
+        self.frame_queue = frame_queue
         self.frame_bus = FrameBus(self.ui_queue, parent=self)
 
         self.plate_events_queue = plate_events_queue
@@ -364,6 +368,15 @@ class WindowManager(QtWidgets.QWidget):
         self.stop_event_threads = stop_event_threads
         self.stop_event_proc = stop_event_proc
         self.grabbers = grabbers
+
+        # Быстрый доступ: один grabber на один source_id (камера или запись)
+        self._grabbers_by_id = {}
+        try:
+            for g in (grabbers or []):
+                self._grabbers_by_id[getattr(g, "camera_id", "")] = g
+        except Exception:
+            pass
+
         self.proc = proc
 
         self._views: List[ViewSpec] = load_views()
@@ -442,6 +455,69 @@ class WindowManager(QtWidgets.QWidget):
             w.apply_view_source(selected_ids[0])
         else:
             w.apply_view_source(None)
+
+    _ROI_SUFFIX = " [ROI]"
+
+    def _base_source_id(self, sid: str) -> str:
+        """
+        Приводим "виртуальные" источники к базовому:
+          - "<id> [ROI]" -> "<id>"
+          - "<cam>:A" / "<cam>:B" -> "<cam>"
+        """
+        if not sid:
+            return ""
+        s = str(sid)
+        if s.endswith(self._ROI_SUFFIX):
+            s = s[:-len(self._ROI_SUFFIX)]
+        if ":A" in s or ":B" in s:
+            s = s.split(":", 1)[0]
+        return s
+
+    def ensure_source_running(self, sid: str) -> None:
+        """
+        Гарантирует, что для БАЗОВОГО источника (камера/запись) запущен grabber.
+        Виртуальные источники (ROI/половинки) не запускают отдельный поток.
+        """
+        base_id = self._base_source_id(sid)
+        if not base_id:
+            return
+
+        # Уже есть grabber — ок
+        if base_id in self._grabbers_by_id:
+            return
+
+        # 1) Камера из CAM_SOURCES — (обычно уже запущена при старте)
+        spec = CAM_SOURCES.get(base_id) or {}
+        if spec.get("type") == "rtsp":
+            src = spec.get("url")
+            if not src:
+                return
+            g = FrameGrabber(
+                base_id, src,
+                self.frame_queue,          # IMPORTANT: должен быть доступен (см. ниже)
+                self.stop_event_threads,   # IMPORTANT: должен быть доступен (см. ниже)
+                ui_queue=self.ui_queue,
+                ui_stride=2,
+            )
+            g.start()
+            self._grabbers_by_id[base_id] = g
+            return
+
+        # 2) Запись из архива
+        recs = all_recordings()
+        rec = recs.get(base_id)
+        if rec:
+            src = str(rec.path)
+            g = FrameGrabber(
+                base_id, src,
+                self.frame_queue,
+                self.stop_event_threads,
+                ui_queue=self.ui_queue,
+                ui_stride=1,  # запись можно чаще, чтобы плавнее
+            )
+            g.start()
+            self._grabbers_by_id[base_id] = g
+            return
 
     def _on_view_renamed(self, view_id: str, new_name: str):
         if view_id in self._wins:

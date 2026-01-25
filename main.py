@@ -157,6 +157,7 @@ def main(selected_cams):
 
     manager = WindowManager(
         ui_queue=ui_queue,
+        frame_queue=frame_queue,
         plate_events_queue=plate_events_queue,
         stop_event_threads=stop_event_threads,
         stop_event_proc=stop_event_proc,

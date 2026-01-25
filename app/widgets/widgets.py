@@ -8,8 +8,9 @@ from PyQt6 import QtCore, QtWidgets, QtGui
 from PIL import Image, ImageDraw, ImageFont
 
 from app.ui.designs import DS, FONT18, FONT16, FONT24, FONT20, FONT28
+from app.video.recording import all_recordings
 from app.widgets.base import WidgetBase
-from app.core.config_cams import CAM_SOURCES
+from app.core.config_cams import CAM_SOURCES, GLOBAL_ROI
 from app.db.camera_registry import load_plategate_settings, save_plategate_settings
 
 WIDGET_CONTROLLERS: Dict[str, object] = {}
@@ -346,8 +347,24 @@ class PlateGateWidget(WidgetBase):
 
     def action_select_stream(self, parent: QtWidgets.QWidget) -> None:
         # список только RTSP (и вообще не widget)
-        cam_ids = [cid for cid, spec in CAM_SOURCES.items() if (spec or {}).get("type") != "widget"]
-        cam_ids = sorted(cam_ids)
+        items = []
+
+        # 1) Архивные записи
+        recs = all_recordings()
+        for rec in recs.values():
+            items.append(rec.id)
+            if rec.camera_id in GLOBAL_ROI:
+                items.append(f"{rec.id} [ROI]")
+
+        # 2) Живые камеры (не-виджеты)
+        for cid, spec in CAM_SOURCES.items():
+            if (spec or {}).get("type") != "widget":
+                items.append(cid)
+                if cid in GLOBAL_ROI:
+                    items.append(f"{cid} [ROI]")
+
+        # уникализируем, сортируем
+        cam_ids = sorted(set(items))
 
         cur = self.control_camera_id or (cam_ids[0] if cam_ids else "")
         if not cam_ids:
@@ -367,17 +384,13 @@ class PlateGateWidget(WidgetBase):
             return
 
         with self._lock:
-            self.control_camera_id = str(sel)
-            self._append_log(f"Выбрана камера контроля: {self.control_camera_id}")
-            # если распознавание включено — статус дружелюбный
-            self.entry_status = f"Камера контроля: {self.control_camera_id}. " + (
-                "Ожидание движения…" if self.recognition_enabled else "Распознавание выключено."
-            )
-
+            chosen = str(sel)
+            self.control_camera_id = chosen
+            base_id = chosen[:-len(" [ROI]")] if chosen.endswith(" [ROI]") else chosen
         # persist + отправим в процесс
-        save_plategate_settings(control_camera_id=self.control_camera_id, recognition_enabled=self.recognition_enabled)
+        save_plategate_settings(control_camera_id=base_id, recognition_enabled=self.recognition_enabled)
         try:
-            self.plate_control_queue.put_nowait({"type": "plate_set_camera", "camera_id": self.control_camera_id})
+            self.plate_control_queue.put_nowait({"type": "plate_set_camera", "camera_id": base_id})
         except Exception:
             pass
 
