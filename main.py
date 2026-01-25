@@ -75,6 +75,8 @@ def main(selected_cams):
     # 2) Очереди/события
     frame_queue = Queue(maxsize=MAX_QUEUE_SIZE)  # JPEG в процесс-обработчик
     ui_queue: "queue.Queue[Tuple[str, np.ndarray]]" = queue.Queue(maxsize=8)  # кадры для UI
+    plate_control_queue = Queue(maxsize=200)
+    plate_events_queue = Queue(maxsize=500)
 
     stop_event_threads = Event()
     stop_event_proc = MPEvent()
@@ -119,7 +121,7 @@ def main(selected_cams):
             elif wtype == "holidays":
                 w = HolidaysWidget(cam_id, ui_queue, stop_event_threads)
             elif wtype == "plategate":
-                w = PlateGateWidget(cam_id, ui_queue, stop_event_threads)
+                w = PlateGateWidget(cam_id, ui_queue, stop_event_threads, plate_control_queue)
             else:
                 print(f"[{cam_id}] unknown widget '{wtype}', skip")
                 continue
@@ -144,9 +146,10 @@ def main(selected_cams):
     # 4) Процесс-обработчик
     proc = Process(
         target=processor_proc,
-        args=(frame_queue, stop_event_proc, DB_PATH_DETECTION, GLOBAL_ROI),
+        args=(frame_queue, plate_control_queue, plate_events_queue, stop_event_proc, DB_PATH_DETECTION, GLOBAL_ROI),
         daemon=True
     )
+
     proc.start()
 
     # 5) Запуск Qt
@@ -154,6 +157,7 @@ def main(selected_cams):
 
     manager = WindowManager(
         ui_queue=ui_queue,
+        plate_events_queue=plate_events_queue,
         stop_event_threads=stop_event_threads,
         stop_event_proc=stop_event_proc,
         grabbers=grabbers,

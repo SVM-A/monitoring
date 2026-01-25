@@ -13,6 +13,7 @@ import numpy as np
 
 from app.core.config import BASE_PATH
 
+
 class FrameBus(QtCore.QObject):
     """
     Единый брокер кадров: вычитывает ui_queue один раз и рассылает кадры всем подписчикам.
@@ -42,7 +43,35 @@ class FrameBus(QtCore.QObject):
     def get_latest(self, cam_id: str):
         return self.latest.get(cam_id)
 
+
+class ProcEventBus(QtCore.QObject):
+    """
+    Брокер событий из multiprocessing.Queue (от processor_proc).
+    Читает очередь и рассылает dict-события в Qt.
+    """
+    eventReady = QtCore.pyqtSignal(object)  # dict
+
+    def __init__(self, events_queue, parent: Optional[QtCore.QObject] = None):
+        super().__init__(parent)
+        self.events_queue = events_queue
+        self._timer = QtCore.QTimer(self)
+        self._timer.setInterval(30)  # ~33 FPS по событиям достаточно
+        self._timer.timeout.connect(self._poll_events_queue)
+        self._timer.start()
+
+    def _poll_events_queue(self):
+        for _ in range(50):  # за тик вычитываем пачку, чтобы не отставать
+            try:
+                ev = self.events_queue.get_nowait()
+            except Exception:
+                break
+            if ev is None:
+                continue
+            self.eventReady.emit(ev)
+
+
 VIEWS_PATH = Path(BASE_PATH) / "views.json"
+
 
 @dataclass
 class ViewSpec:
@@ -52,6 +81,7 @@ class ViewSpec:
     selected_ids: Optional[List[str]] = None
     # Выбранная сетка для окна. "auto" | "2x2" | "3x3" | "1L-2S-bottom-1R" | ...
     layout: str = "auto"
+
 
 def _migrate_item(item: dict) -> ViewSpec:
     vid = item.get("id") or "view-1"
@@ -66,6 +96,7 @@ def _migrate_item(item: dict) -> ViewSpec:
     layout = str(item.get("layout") or "auto")
     return ViewSpec(id=vid, name=name, selected_ids=sel, layout=layout)
 
+
 def load_views() -> List[ViewSpec]:
     if not VIEWS_PATH.exists():
         return [ViewSpec(id="view-1", name="Окно 1", selected_ids=[], layout="auto")]
@@ -78,6 +109,7 @@ def load_views() -> List[ViewSpec]:
     except Exception:
         return [ViewSpec(id="view-1", name="Окно 1", selected_ids=[], layout="auto")]
 
+
 def save_views(items: List[ViewSpec]) -> None:
     VIEWS_PATH.parent.mkdir(parents=True, exist_ok=True)
     payload = [
@@ -85,6 +117,7 @@ def save_views(items: List[ViewSpec]) -> None:
         for v in items
     ]
     VIEWS_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
 
 def next_view_id(items: List[ViewSpec]) -> str:
     base = "view-"

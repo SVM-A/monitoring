@@ -9,6 +9,8 @@ from PIL import Image, ImageDraw, ImageFont
 
 from app.ui.designs import DS, FONT18, FONT16, FONT24, FONT20, FONT28
 from app.widgets.base import WidgetBase
+from app.core.config_cams import CAM_SOURCES
+from app.db.camera_registry import load_plategate_settings, save_plategate_settings
 
 WIDGET_CONTROLLERS: Dict[str, object] = {}
 
@@ -89,8 +91,10 @@ class PlateGateWidget(WidgetBase):
     _BTN_OPEN    = (0.06, 0.70, 0.62, 0.78)
     _BTN_MUTE    = (0.68, 0.70, 0.94, 0.78)
     _FIELD_INPUT = (0.06, 0.46, 0.94, 0.54)
+    _BTN_SELECT_STREAM = (0.06, 0.32, 0.60, 0.40)
+    _BTN_TOGGLE_RECOG  = (0.64, 0.32, 0.94, 0.40)
 
-    def __init__(self, camera_id: str, ui_queue, stop_event):
+    def __init__(self, camera_id: str, ui_queue, stop_event, plate_control_queue):
         super().__init__(camera_id, ui_queue, stop_event)
         self._lock = threading.Lock()
 
@@ -102,6 +106,31 @@ class PlateGateWidget(WidgetBase):
         self._alarm_fired: bool = False
         self.alarm_muted: bool = False
         self._log: List[str] = []
+
+        self.plate_control_queue = plate_control_queue
+
+        # persistent settings
+        st = load_plategate_settings()
+        self.control_camera_id: str = st.get("control_camera_id") or ""
+        self.recognition_enabled: bool = bool(st.get("recognition_enabled") or False)
+
+        if self.recognition_enabled:
+            self.entry_status = "Распознавание включено. Ожидание движения в зоне контроля…"
+        else:
+            self.entry_status = "Распознавание выключено."
+
+        # При старте приложения — восстановим режим в processor_proc
+        # (очередь уже существует, процесс может стартовать чуть позже — не страшно)
+        try:
+            if self.control_camera_id:
+                self.plate_control_queue.put_nowait({"type": "plate_set_camera", "camera_id": self.control_camera_id})
+            if self.recognition_enabled:
+                self.plate_control_queue.put_nowait({"type": "plate_enable"})
+            else:
+                self.plate_control_queue.put_nowait({"type": "plate_disable"})
+        except Exception:
+            pass
+
 
         WIDGET_CONTROLLERS[self.camera_id] = self
 
@@ -178,6 +207,14 @@ class PlateGateWidget(WidgetBase):
         def hit(r):
             x0, y0, x1, y1 = r
             return x0 <= rel_x <= x1 and y0 <= rel_y <= y1
+
+        if hit(self._BTN_SELECT_STREAM):
+            self.action_select_stream(parent)
+            return True
+
+        if hit(self._BTN_TOGGLE_RECOG):
+            self.action_toggle_recognition()
+            return True
 
         if hit(self._BTN_CONFIRM):
             self.action_confirm()
@@ -282,6 +319,14 @@ class PlateGateWidget(WidgetBase):
             th = bbox[3] - bbox[1]
             d.text((rx0 + (rx1 - rx0 - tw) // 2, ry0 + (ry1 - ry0 - th) // 2), title, fill=txt, font=FONT20 or FONT18)
 
+        # Кнопки управления распознаванием
+        with self._lock:
+            cam_label = self.control_camera_id or "—"
+            recog = self.recognition_enabled
+
+        draw_btn(self._BTN_SELECT_STREAM, f"Контроль: {cam_label}", "secondary")
+        draw_btn(self._BTN_TOGGLE_RECOG, "Распознавание: ON" if recog else "Распознавание: OFF", "primary" if recog else "secondary")
+
         draw_btn(self._BTN_CONFIRM, "Подтвердить (auto)", "primary")
         draw_btn(self._BTN_APPLY, "Принять (manual)", "primary")
         draw_btn(self._BTN_OPEN, "Открыть шлагбаум", "danger")
@@ -298,6 +343,98 @@ class PlateGateWidget(WidgetBase):
 
         # PIL -> OpenCV (BGR)
         return np.array(img)[:, :, ::-1].copy()
+
+    def action_select_stream(self, parent: QtWidgets.QWidget) -> None:
+        # список только RTSP (и вообще не widget)
+        cam_ids = [cid for cid, spec in CAM_SOURCES.items() if (spec or {}).get("type") != "widget"]
+        cam_ids = sorted(cam_ids)
+
+        cur = self.control_camera_id or (cam_ids[0] if cam_ids else "")
+        if not cam_ids:
+            with self._lock:
+                self.entry_status = "Нет доступных потоков для контроля."
+            return
+
+        sel, ok = QtWidgets.QInputDialog.getItem(
+            parent,
+            "Выбор потока для контроля",
+            "Камера:",
+            cam_ids,
+            cam_ids.index(cur) if cur in cam_ids else 0,
+            False
+        )
+        if not ok:
+            return
+
+        with self._lock:
+            self.control_camera_id = str(sel)
+            self._append_log(f"Выбрана камера контроля: {self.control_camera_id}")
+            # если распознавание включено — статус дружелюбный
+            self.entry_status = f"Камера контроля: {self.control_camera_id}. " + (
+                "Ожидание движения…" if self.recognition_enabled else "Распознавание выключено."
+            )
+
+        # persist + отправим в процесс
+        save_plategate_settings(control_camera_id=self.control_camera_id, recognition_enabled=self.recognition_enabled)
+        try:
+            self.plate_control_queue.put_nowait({"type": "plate_set_camera", "camera_id": self.control_camera_id})
+        except Exception:
+            pass
+
+    def action_toggle_recognition(self) -> None:
+        with self._lock:
+            self.recognition_enabled = not self.recognition_enabled
+            enabled = self.recognition_enabled
+            self._append_log("Распознавание включено." if enabled else "Распознавание выключено.")
+            if enabled:
+                self.entry_status = "Распознавание включено. Ожидание движения в зоне контроля…"
+            else:
+                self.entry_status = "Распознавание выключено."
+                self.entry_plate_auto = ""
+
+        save_plategate_settings(control_camera_id=self.control_camera_id, recognition_enabled=self.recognition_enabled)
+
+        try:
+            if self.control_camera_id:
+                self.plate_control_queue.put_nowait({"type": "plate_set_camera", "camera_id": self.control_camera_id})
+            self.plate_control_queue.put_nowait({"type": "plate_enable" if enabled else "plate_disable"})
+        except Exception:
+            pass
+
+    def handle_plate_event(self, ev: dict) -> None:
+        """
+        Сюда прилетают события из processor_proc через ProcEventBus (Qt thread).
+        Аккуратно обновляем внутренние поля под lock.
+        """
+        et = (ev or {}).get("type")
+
+        if et == "plate_status":
+            cam_id = str(ev.get("camera_id") or "")
+            msg = str(ev.get("message") or "")
+
+            # показываем статусы либо глобальные, либо относящиеся к выбранной камере
+            with self._lock:
+                if not cam_id or cam_id == self.control_camera_id:
+                    if msg:
+                        self.entry_status = msg
+            return
+
+        if et == "plate_detection":
+            cam_id = str(ev.get("camera_id") or "")
+            text = str(ev.get("text") or "").strip().upper()
+            if not text:
+                return
+
+            with self._lock:
+                if cam_id != self.control_camera_id:
+                    return
+                self.entry_plate_auto = text
+                self.entry_status = f"Номер распознан: {text}. Ожидание подтверждения…"
+                self.entry_motion = True
+                self._start_wait()
+                self._append_log(f"Авто-номер: {text}")
+            return
+
 
     def run(self) -> None:
         def _render():

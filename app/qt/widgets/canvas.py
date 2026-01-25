@@ -6,7 +6,7 @@ import numpy as np
 import cv2
 from PyQt6 import QtCore, QtGui, QtWidgets
 
-from app.core.config_cams import CAM_SOURCES, GLOBAL_ROI, PLATE_DETECTION_CAMERAS
+from app.core.config_cams import CAM_SOURCES, GLOBAL_ROI
 from app.ui.layout import compose_focus_layout, compose_named_layout
 from app.video.ffproxy import apply_roi
 from app.video.recording import is_recording_source, next_frame_for, recording_by_id
@@ -38,6 +38,10 @@ class CanvasWidget(QtWidgets.QWidget):
         self._sb_drag_offset = 0
         # новый параметр: выбранная сетка (именованный шаблон)
         self._layout_key: str = "auto"
+
+        # plate overlays: base_camera_id -> {"bbox_full": [...], "bbox_roi": [...], "expires": float}
+        self._plate_overlays: Dict[str, dict] = {}
+
 
     def set_layout_key(self, key: str):
         self._layout_key = key or "auto"
@@ -86,31 +90,6 @@ class CanvasWidget(QtWidgets.QWidget):
                         roi_conf = GLOBAL_ROI.get(roi_key)
                         roi_frame = apply_roi(frame, roi_conf)
 
-                        # Если для этой камеры детекция номеров не включена —
-                        # просто показываем ROI без распознавания.
-                        if roi_key not in PLATE_DETECTION_CAMERAS:
-                            out[aid] = roi_frame
-                            continue
-
-                        # лёгкий детектор номера поверх ROI
-                        try:
-                            pass
-                        except Exception:
-                            plate, bbox = None, None
-
-                        if bbox:
-                            try:
-                                x, y, w, h = map(int, bbox)
-                                cv2.rectangle(
-                                    roi_frame,
-                                    (x, y),
-                                    (x + w, y + h),
-                                    (0, 255, 0),
-                                    2,
-                                )
-                            except Exception:
-                                pass
-
                         out[aid] = roi_frame
                         continue
 
@@ -119,28 +98,6 @@ class CanvasWidget(QtWidgets.QWidget):
                     if isinstance(src, np.ndarray) and src.size > 0:
                         roi_conf = GLOBAL_ROI.get(base_id)
                         roi_frame = apply_roi(src, roi_conf)
-
-                        # Камера может иметь ROI, но детекция номеров для неё отключена.
-                        if base_id not in PLATE_DETECTION_CAMERAS:
-                            out[aid] = roi_frame
-                            continue
-
-                        try:
-                            pass
-                        except Exception:
-                            plate, bbox = None, None
-                        if bbox:
-                            try:
-                                x, y, w, h = map(int, bbox)
-                                cv2.rectangle(
-                                    roi_frame,
-                                    (x, y),
-                                    (x + w, y + h),
-                                    (0, 255, 0),
-                                    2,
-                                )
-                            except Exception:
-                                pass
                         out[aid] = roi_frame
                     else:
                         out[aid] = None
@@ -159,6 +116,35 @@ class CanvasWidget(QtWidgets.QWidget):
                     add_half(aid, base, part)
                 else:
                     out[aid] = self.latest.get(aid)
+            # --- apply plate overlays ---
+            now_sec = QtCore.QTime.currentTime().msecsSinceStartOfDay() / 1000.0
+            for key, frame in list(out.items()):
+                if frame is None or not isinstance(frame, np.ndarray) or frame.size == 0:
+                    continue
+
+                # base camera id (для ROI-view отрезаем " [ROI]")
+                base = key
+                is_roi_view = False
+                if base.endswith(_ROI_SUFFIX):
+                    is_roi_view = True
+                    base = base[:-len(_ROI_SUFFIX)]
+
+                ov = self._plate_overlays.get(base)
+                if not ov:
+                    continue
+                if ov.get("expires", 0) < now_sec:
+                    continue
+
+                bbox = ov.get("bbox_roi") if is_roi_view else ov.get("bbox_full")
+                if not bbox:
+                    continue
+
+                try:
+                    x, y, w, h = map(int, bbox)
+                    cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                except Exception:
+                    pass
+
             return out
 
         # fallback: все источники проекта (как было)
@@ -179,10 +165,39 @@ class CanvasWidget(QtWidgets.QWidget):
                 except Exception:
                     pass
             out[cid] = frame
+        # --- apply plate overlays (fallback) ---
+        now_sec = QtCore.QTime.currentTime().msecsSinceStartOfDay() / 1000.0
+        for key, frame in list(out.items()):
+            if frame is None or not isinstance(frame, np.ndarray) or frame.size == 0:
+                continue
+            base = key.split(_VSEP)[0]  # для половинок берем базовую камеру
+            ov = self._plate_overlays.get(base)
+            if not ov:
+                continue
+            if ov.get("expires", 0) < now_sec:
+                continue
+            bbox = ov.get("bbox_full")
+            if not bbox:
+                continue
+            try:
+                x, y, w, h = map(int, bbox)
+                cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+            except Exception:
+                pass
         return out
 
     def set_focus(self, cid: Optional[str]):
         self.focus_id = cid
+        self.update()
+
+    def set_plate_overlay(self, camera_id: str, bbox_full=None, bbox_roi=None, ttl_sec: float = 1.5):
+        if not camera_id:
+            return
+        self._plate_overlays[camera_id] = {
+            "bbox_full": bbox_full,
+            "bbox_roi": bbox_roi,
+            "expires": QtCore.QTime.currentTime().msecsSinceStartOfDay() / 1000.0 + float(ttl_sec),
+        }
         self.update()
 
     def rtsp_ids(self) -> List[str]:

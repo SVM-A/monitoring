@@ -1,5 +1,6 @@
 # app/proccesor/worker.py
 
+from queue import Empty
 import sqlite3
 from multiprocessing import Queue, Event as MPEvent
 
@@ -10,8 +11,6 @@ import time
 from app.detector.pipeline import PlateDetectionPipeline
 from app.core.config_cams import PLATE_YOLO_MODEL_PATH
 from app.db.camera_registry import save_detection
-from app.video.ffproxy import apply_roi
-from app.core.config_cams import PLATE_DETECTION_CAMERAS
 
 
 # Процесс, который декодирует JPEG-байты, применяет ROI и выполняет распознавание.
@@ -31,7 +30,14 @@ from app.core.config_cams import PLATE_DETECTION_CAMERAS
 #         * возвращает PlateDetectionResult (text, bbox, score, ...).
 
 
-def processor_proc(in_queue: Queue, stop_event: MPEvent, db_path: str, roi_config: dict):
+def processor_proc(
+        in_queue: Queue,
+        control_queue: Queue,
+        events_queue: Queue,
+        stop_event: MPEvent,
+        db_path: str,
+        roi_config: dict
+):
     """
         Каркас использования пайплайна (на будущее):
 
@@ -64,7 +70,71 @@ def processor_proc(in_queue: Queue, stop_event: MPEvent, db_path: str, roi_confi
         device="auto",
     )
 
+    # runtime state (управляется из UI)
+    enabled: bool = False
+    target_camera_id: str = ""
+
+    # сообщаем UI что процесс детекции поднялся
+    try:
+        events_queue.put_nowait({
+            "type": "plate_status",
+            "stage": "ready",
+            "message": "Модуль распознавания готов. Ожидание команды включения…",
+            "camera_id": "",
+            "ts": time.time(),
+        })
+    except Exception:
+        pass
+
     while not stop_event.is_set():
+        # --- команды из UI (не блокируемся) ---
+        for _ in range(20):
+            try:
+                cmd = control_queue.get_nowait()
+            except Exception:
+                break
+            if not isinstance(cmd, dict):
+                continue
+
+            ctype = cmd.get("type")
+            if ctype == "plate_set_camera":
+                target_camera_id = str(cmd.get("camera_id") or "")
+                try:
+                    events_queue.put_nowait({
+                        "type": "plate_status",
+                        "stage": "config",
+                        "message": f"Камера контроля выбрана: {target_camera_id or '—'}",
+                        "camera_id": target_camera_id,
+                        "ts": time.time(),
+                    })
+                except Exception:
+                    pass
+
+            elif ctype == "plate_enable":
+                enabled = True
+                try:
+                    events_queue.put_nowait({
+                        "type": "plate_status",
+                        "stage": "enabled",
+                        "message": "Распознавание включено. Ожидание движения в зоне контроля…",
+                        "camera_id": target_camera_id,
+                        "ts": time.time(),
+                    })
+                except Exception:
+                    pass
+
+            elif ctype == "plate_disable":
+                enabled = False
+                try:
+                    events_queue.put_nowait({
+                        "type": "plate_status",
+                        "stage": "disabled",
+                        "message": "Распознавание выключено.",
+                        "camera_id": target_camera_id,
+                        "ts": time.time(),
+                    })
+                except Exception:
+                    pass
         try:
             item = in_queue.get(timeout=0.5)  # ждём полсекунды
         except Exception:
@@ -73,10 +143,16 @@ def processor_proc(in_queue: Queue, stop_event: MPEvent, db_path: str, roi_confi
             break
         camera_id, jpg_bytes = item
 
-        # --- Фильтр по камерам: детекцию делаем только там, где она включена в конфиге ---
-        # Это независимо от того, есть ROI или нет.
-        if PLATE_DETECTION_CAMERAS and camera_id not in PLATE_DETECTION_CAMERAS:
-            # для остальных камер просто ничего не считаем (но UI всё равно их показывает)
+        # если распознавание выключено — вообще не тратим ресурсы
+        if not enabled:
+            continue
+
+        # если камера контроля не выбрана — тоже ничего не делаем
+        if not target_camera_id:
+            continue
+
+        # обрабатываем только выбранную камеру
+        if camera_id != target_camera_id:
             continue
 
         # ---------------------------------------------------------------
@@ -90,9 +166,21 @@ def processor_proc(in_queue: Queue, stop_event: MPEvent, db_path: str, roi_confi
         roi_conf = roi_config.get(camera_id)
 
         ts = time.time()
+
+        try:
+            events_queue.put_nowait({
+                "type": "plate_status",
+                "stage": "detect",
+                "message": "Поиск номерного знака…",
+                "camera_id": camera_id,
+                "ts": ts,
+            })
+        except Exception:
+            pass
+
         result = pipeline.process_frame(
             camera_id=camera_id,
-            frame=frame,       # полный кадр (pipeline сам применит ROI)
+            frame=frame,  # полный кадр (pipeline сам применит ROI)
             roi_conf=roi_conf,
             ts=ts,
         )
@@ -106,6 +194,33 @@ def processor_proc(in_queue: Queue, stop_event: MPEvent, db_path: str, roi_confi
                 bbox=list(result.bbox),
                 extra={"detected_by": "yolo+tesseract", "score": result.score},
             )
+            # bbox приходит в координатах ROI-кадра. Для прямоугольного crop ROI
+            # можно получить full-bbox, добавив смещения x/y.
+            bbox_roi = list(result.bbox) if result.bbox else None
+            bbox_full = None
+            try:
+                if bbox_roi and isinstance(roi_conf, dict) and roi_conf.get("type") == "rect":
+                    ox = int(roi_conf.get("x") or 0)
+                    oy = int(roi_conf.get("y") or 0)
+                    x, y, w, h = map(int, bbox_roi)
+                    bbox_full = [x + ox, y + oy, w, h]
+                else:
+                    bbox_full = bbox_roi
+            except Exception:
+                bbox_full = bbox_roi
+
+            try:
+                events_queue.put_nowait({
+                    "type": "plate_detection",
+                    "camera_id": camera_id,
+                    "text": result.text,
+                    "score": float(result.score or 0.0),
+                    "bbox_roi": bbox_roi,
+                    "bbox_full": bbox_full,
+                    "ts": ts,
+                })
+            except Exception:
+                pass
 
     conn.close()
     print("Processor stopped")

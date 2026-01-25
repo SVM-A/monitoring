@@ -8,6 +8,8 @@ from app.qt.widgets.canvas import CanvasWidget
 from app.video.ffproxy import FFProxyManager, ProxyParams
 from app.core.config_cams import CAM_SOURCES
 from app.util.mask import mask_url
+from app.qt.runtime import ProcEventBus
+from app.widgets.widgets import WIDGET_CONTROLLERS
 from app.qt.widgets.right_sidebar import RightSidebarDock
 from app.qt.runtime import load_views, ViewSpec, FrameBus
 from app.video.recording import RecordingManager
@@ -345,10 +347,15 @@ class WindowManager(QtWidgets.QWidget):
     """
     Простой менеджер: держит ссылку на все MainWindow и следит за списком ViewSpec.
     """
-    def __init__(self, ui_queue, stop_event_threads, stop_event_proc, grabbers, proc):
+
+    def __init__(self, ui_queue, plate_events_queue, stop_event_threads, stop_event_proc, grabbers, proc):
         super().__init__()
         self.ui_queue = ui_queue
         self.frame_bus = FrameBus(self.ui_queue, parent=self)
+
+        self.plate_events_queue = plate_events_queue
+        self.event_bus = ProcEventBus(self.plate_events_queue, parent=self)
+        self.event_bus.eventReady.connect(self._on_proc_event)
 
         # новый менеджер записей
         self.rec_mgr = RecordingManager()
@@ -439,4 +446,39 @@ class WindowManager(QtWidgets.QWidget):
     def _on_view_renamed(self, view_id: str, new_name: str):
         if view_id in self._wins:
             self._wins[view_id].setWindowTitle(new_name)
+
+    def _on_proc_event(self, ev: dict):
+        if not isinstance(ev, dict):
+            return
+
+        et = ev.get("type")
+
+        # 1) прокидываем в PlateGateWidget (если он есть)
+        ctrl = WIDGET_CONTROLLERS.get("plate_gate") or WIDGET_CONTROLLERS.get("plategate")  # если вдруг id другой
+        if ctrl is None:
+            # чаще всего camera_id виджета = "plate_gate" (проверь в CAM_SOURCES)
+            # поэтому сделаем универсально: найдём первый PlateGateWidget
+            for k, v in list(WIDGET_CONTROLLERS.items()):
+                if v.__class__.__name__ == "PlateGateWidget":
+                    ctrl = v
+                    break
+
+        if ctrl is not None and hasattr(ctrl, "handle_plate_event"):
+            try:
+                ctrl.handle_plate_event(ev)
+            except Exception:
+                pass
+
+        # 2) bbox -> canvas overlay во всех окнах
+        if et == "plate_detection":
+            cam_id = str(ev.get("camera_id") or "")
+            bbox_full = ev.get("bbox_full")
+            bbox_roi = ev.get("bbox_roi")
+            if cam_id and (bbox_full or bbox_roi):
+                for w in list(self._wins.values()):
+                    try:
+                        w.canvas.set_plate_overlay(cam_id, bbox_full=bbox_full, bbox_roi=bbox_roi, ttl_sec=1.5)
+                    except Exception:
+                        pass
+
 

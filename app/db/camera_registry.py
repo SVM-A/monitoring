@@ -14,7 +14,6 @@ from app.core.config_cams import DB_PATH_CAMERAS
 from app.core.config_cams import DB_PATH_DETECTION
 
 
-
 def init_db(path=DB_PATH_DETECTION):
     conn = sqlite3.connect(path, check_same_thread=False)
     cur = conn.cursor()
@@ -31,6 +30,7 @@ def init_db(path=DB_PATH_DETECTION):
     conn.commit()
     return conn
 
+
 def save_detection(conn, camera_id, plate, bbox=None, extra=None):
     cur = conn.cursor()
     cur.execute(
@@ -38,6 +38,7 @@ def save_detection(conn, camera_id, plate, bbox=None, extra=None):
         (camera_id, datetime.utcnow().isoformat(), plate, json.dumps(bbox), json.dumps(extra))
     )
     conn.commit()
+
 
 SCHEMA = [
     """
@@ -63,6 +64,7 @@ SCHEMA = [
     """
 ]
 
+
 def _connect() -> sqlite3.Connection:
     db_path = Path(DB_PATH_CAMERAS)
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -74,8 +76,10 @@ def _connect() -> sqlite3.Connection:
     conn.commit()
     return conn
 
+
 def _now_iso() -> str:
     return datetime.utcnow().isoformat(timespec="seconds") + "Z"
+
 
 @dataclass
 class CameraCapabilities:
@@ -104,6 +108,7 @@ class CameraCapabilities:
             )
             c.commit()
 
+
 @dataclass
 class CameraSettings:
     data: Dict[str, Any]
@@ -130,6 +135,7 @@ class CameraSettings:
                 (camera_id, payload, _now_iso())
             )
             c.commit()
+
 
 @dataclass
 class CameraRuntime:
@@ -159,4 +165,37 @@ class CameraRuntime:
             c.commit()
 
 
+# -----------------------------------------------------------------------------
+# PlateGate settings (persistent)
+# -----------------------------------------------------------------------------
 
+PLATEGATE_SETTINGS_ID = "__plategate__"
+
+
+def load_plategate_settings() -> dict:
+    """
+    Настройки виджета PlateGateWidget, чтобы переживали перезапуск.
+    Храним в camera_settings под camera_id="__plategate__".
+
+    Формат:
+      {
+        "control_camera_id": "entry gate",
+        "recognition_enabled": True
+      }
+    """
+    obj = CameraSettings.load(PLATEGATE_SETTINGS_ID)
+    data = (obj.data if obj else {}) or {}
+    return {
+        "control_camera_id": str(data.get("control_camera_id") or ""),
+        "recognition_enabled": bool(data.get("recognition_enabled") or False),
+    }
+
+
+def save_plategate_settings(*, control_camera_id: str, recognition_enabled: bool) -> None:
+    CameraSettings.save(
+        PLATEGATE_SETTINGS_ID,
+        {
+            "control_camera_id": str(control_camera_id or ""),
+            "recognition_enabled": bool(recognition_enabled),
+        }
+    )

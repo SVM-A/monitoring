@@ -7,13 +7,12 @@ from pathlib import Path
 
 from app.core.config import BASE_PATH
 
-
-
 # --config_loader--
 
 try:
     # опционально: pip install python-dotenv
     from dotenv import load_dotenv
+
     load_dotenv()
 except Exception:
     # dotenv отсутствует — надеемся на реальные env
@@ -21,13 +20,16 @@ except Exception:
 
 BASE_DIR = Path(__file__).resolve().parent
 
+
 def load_json(path: Path) -> Dict[str, Any]:
     if not path.exists():
         return {}
     with path.open('r', encoding='utf-8') as f:
         return json.load(f)
 
+
 from urllib.parse import quote
+
 
 def build_rtsp_for_cam(cam_spec: Dict[str, Any], cam_key: str) -> Optional[str]:
     # override через переменные окружения
@@ -121,6 +123,7 @@ def load_cameras(cameras_json: str = None) -> Dict[str, dict]:
 
     return result
 
+
 def load_roi(roi_json: str = None) -> Dict[str, Any]:
     if roi_json is None:
         path = BASE_DIR / "roi.json"
@@ -128,9 +131,11 @@ def load_roi(roi_json: str = None) -> Dict[str, Any]:
         path = Path(roi_json)
     return load_json(path)
 
+
 # example quick helper for hot reload:
 def reload_roi_from(path: Optional[str] = None):
     return load_roi(path)
+
 
 # --constants--
 
@@ -138,50 +143,50 @@ def reload_roi_from(path: Optional[str] = None):
 # Основные настройки и константы, которые удобно видеть вверху.
 DB_PATH_DETECTION = BASE_PATH / "detections.db"
 DB_PATH_CAMERAS = BASE_PATH / "cameras.db"
-CAM_SOURCES = load_cameras()             # Источники камер и виджетов (из cam_configs/cameras.json)
-MAX_QUEUE_SIZE = 8                       # Ограничение очереди кадров для процессинга
-GLOBAL_ROI = load_roi()                  # Зоны интереса (можно менять на лету, см. SIGHUP)
+CAM_SOURCES = load_cameras()  # Источники камер и виджетов (из cam_configs/cameras.json)
+MAX_QUEUE_SIZE = 8  # Ограничение очереди кадров для процессинга
+GLOBAL_ROI = load_roi()  # Зоны интереса (можно менять на лету, см. SIGHUP)
 
 # Цвета и локализация текста для виджетов
-RU_MONTHS = ["", "Январь","Февраль","Март","Апрель","Май","Июнь","Июль","Август","Сентябрь","Октябрь","Ноябрь","Декабрь"]
-RU_MONTHS_SHORT = ["","янв","фев","мар","апр","май","июн","июл","авг","сен","окт","ноя","дек"]
-RU_WD = ["Пн","Вт","Ср","Чт","Пт","Сб","Вс"]
+RU_MONTHS = ["", "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль", "Август", "Сентябрь", "Октябрь",
+             "Ноябрь", "Декабрь"]
+RU_MONTHS_SHORT = ["", "янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"]
+RU_WD = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 
-COLOR_BG        = (18, 18, 22)
-COLOR_TEXT      = (230, 230, 230)
-COLOR_SUB       = (200, 200, 255)
-COLOR_GRID      = (70, 70, 78)
-COLOR_CELL      = (35, 35, 40)
-COLOR_WEEKEND   = (40, 45, 70)      # подложка выходных дней
-COLOR_HOLIDAY   = (120, 30, 40)     # подложка праздников (перекрывает выходные)
-COLOR_TODAY     = (80, 90, 110)
+COLOR_BG = (18, 18, 22)
+COLOR_TEXT = (230, 230, 230)
+COLOR_SUB = (200, 200, 255)
+COLOR_GRID = (70, 70, 78)
+COLOR_CELL = (35, 35, 40)
+COLOR_WEEKEND = (40, 45, 70)  # подложка выходных дней
+COLOR_HOLIDAY = (120, 30, 40)  # подложка праздников (перекрывает выходные)
+COLOR_TODAY = (80, 90, 110)
 
-COLOR_ALERT     = (255, 170, 60)    # яркий блок про «флаги должны висеть»
-COLOR_OK        = (140, 210, 120)   # блок про «флаги не нужны»
+COLOR_ALERT = (255, 170, 60)  # яркий блок про «флаги должны висеть»
+COLOR_OK = (140, 210, 120)  # блок про «флаги не нужны»
 
-CLOCK_NORMAL    = (28, 28, 34)      # фон циферблата — обычный день
-CLOCK_WEEKEND   = (34, 34, 48)      # фон циферблата — выходной
-CLOCK_HOLIDAY   = (60, 22, 28)      # фон циферблата — праздник
+CLOCK_NORMAL = (28, 28, 34)  # фон циферблата — обычный день
+CLOCK_WEEKEND = (34, 34, 48)  # фон циферблата — выходной
+CLOCK_HOLIDAY = (60, 22, 28)  # фон циферблата — праздник
 # app/core/config_cams.py  (добавь в конец блока цветов)
 
 # Тема для календаря/погоды
-COLOR_TEMP      = (210, 220, 255)    # температура в ячейке (чуть светлее основного текста)
-BADGE_BG        = (30, 30, 36)       # фон бейджа
-BADGE_TEXT      = (220, 220, 230)    # текст бейджа по умолчанию
-BADGE_RAIN      = (120, 160, 220)    # осадки (обычные)
-BADGE_RAIN_HIGH = (90, 150, 230)     # осадки (много)
-BADGE_WIND      = (230, 160, 160)    # сильный ветер
-
+COLOR_TEMP = (210, 220, 255)  # температура в ячейке (чуть светлее основного текста)
+BADGE_BG = (30, 30, 36)  # фон бейджа
+BADGE_TEXT = (220, 220, 230)  # текст бейджа по умолчанию
+BADGE_RAIN = (120, 160, 220)  # осадки (обычные)
+BADGE_RAIN_HIGH = (90, 150, 230)  # осадки (много)
+BADGE_WIND = (230, 160, 160)  # сильный ветер
 
 # Пиктограммы (можешь заменить на свои)
-WX_ICON_RAIN_LIGHT = "☔"   # небольшие осадки
-WX_ICON_RAIN_HEAVY = "🌧"   # сильные осадки
-WX_ICON_WIND       = "💨"
-WX_ICON_DRY        = "☁"    # без осадков (облачно / ясно)
+WX_ICON_RAIN_LIGHT = "☔"  # небольшие осадки
+WX_ICON_RAIN_HEAVY = "🌧"  # сильные осадки
+WX_ICON_WIND = "💨"
+WX_ICON_DRY = "☁"  # без осадков (облачно / ясно)
 
 # Пороговые значения (если хочешь – меняй)
-WIND_ALERT_MS = 12.0   # м/с — сильный ветер
-RAIN_ALERT_MM = 8.0    # мм/сутки — «много осадков»
+WIND_ALERT_MS = 12.0  # м/с — сильный ветер
+RAIN_ALERT_MM = 8.0  # мм/сутки — «много осадков»
 
 
 # --signals--
@@ -190,31 +195,9 @@ def handle_sighup(signum, frame):
     print("SIGHUP received — reloading ROI config")
     GLOBAL_ROI = reload_roi_from()
 
+
 if hasattr(signal, "SIGHUP"):
     signal.signal(signal.SIGHUP, handle_sighup)
-
-
-
-# -- detection toggles --
-
-# Камеры, на которых включено распознавание номеров.
-# Имена здесь – это ключи из CAM_SOURCES (cam_configs/cameras.json).
-PLATE_DETECTION_CAMERAS: set[str] = {
-    # основной шлагбаум
-    "entry gate",
-    # сюда потом можно добавлять ещё камеры
-    # "entry gate falcone",
-    # "dual-sky",
-}
-
-# --- plate detector model ---
-PLATE_YOLO_MODEL_PATH: str = str(BASE_PATH / "app/models/plate_detector/license-plate-finetune-v1s.pt")
-
-
-# Камеры, на которых включена детекция движения (motion-gate).
-# Пока оставим равным PLATE_DETECTION_CAMERAS,
-# но в будущем можно разнести.
-MOTION_DETECTION_CAMERAS: set[str] = set(PLATE_DETECTION_CAMERAS)
 
 # Путь к весам YOLO для детектора госномеров.
 # Файл ожидается в: app/models/plate_detector/license-plate-finetune-v1s.pt
