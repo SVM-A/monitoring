@@ -5,6 +5,7 @@ from typing import Optional, Dict, Tuple, List
 import cv2
 import numpy as np
 
+from app.core.config_cams import CAM_SOURCES
 
 def _blit_clip(canvas: np.ndarray, tile: np.ndarray, x0: int, y0: int) -> tuple[int,int,int,int] | None:
     H, W = canvas.shape[:2]
@@ -29,6 +30,12 @@ def pick_grid(n: int) -> tuple[int, int]:
     if n <= 4: return 2, 2
     if n <= 9: return 3, 3
     return 4, 4
+
+def _missing_text(cam_id: str) -> str:
+    spec = CAM_SOURCES.get(cam_id, {}) or {}
+    if spec.get("type") == "widget":
+        return f"WIDGET {cam_id} UNAVAILABLE"
+    return "NO SIGNAL"
 
 def fit_into_box(frame: np.ndarray, box_w: int, box_h: int) -> np.ndarray:
     if frame is None or frame.size == 0:
@@ -216,18 +223,19 @@ def compose_grid(
 
     canvas = np.zeros((rows * cell_h, cols * cell_w, 3), dtype=np.uint8)
 
-    def annotate(img, its_ok: bool):
+    def annotate(img, cam_id: str, its_ok: bool):
         if not its_ok:
-            cv2.putText(img, "NO SIGNAL", (20, 60),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3, cv2.LINE_AA)
-
+            cv2.putText(
+                img, _missing_text(cam_id), (20, 60),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3, cv2.LINE_AA
+            )
     for idx, cam_id in enumerate(ids):
         r, c = divmod(idx, cols)
         frame = frames.get(cam_id)
         mode = (aspect_map or {}).get(cam_id, "fit")
         fitted = fit_into_box_with_mode(frame, cell_w, cell_h, mode)
         ok = frame is not None
-        annotate(fitted, ok)
+        annotate(fitted, cam_id, ok)
         y0, y1 = r * cell_h, (r + 1) * cell_h
         x0, x1 = c * cell_w, (c + 1) * cell_w
         canvas[y0:y1, x0:x1] = fitted

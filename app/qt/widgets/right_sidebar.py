@@ -1,7 +1,7 @@
 # app/qt/widgets/right_sidebar.py
 from __future__ import annotations
 from PyQt6 import QtCore, QtWidgets
-from app.qt.widgets.camera_controls import CameraControlDock
+from app.qt.widgets.camera_сontrols import CameraControlDock
 from app.qt.widgets.views_dock import ViewsDock
 
 

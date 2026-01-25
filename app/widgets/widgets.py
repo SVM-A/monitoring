@@ -1,11 +1,17 @@
 # app/widgets/widgets.py
-
+import threading
 import time as _time
-from typing import Optional
+from typing import Optional, Dict, List
 
 import numpy as np
+from PyQt6 import QtCore, QtWidgets, QtGui
+from PIL import Image, ImageDraw, ImageFont
 
+from app.ui.designs import DS, FONT18, FONT16, FONT24, FONT20, FONT28
 from app.widgets.base import WidgetBase
+
+WIDGET_CONTROLLERS: Dict[str, object] = {}
+
 
 
 class CalendarWidget(WidgetBase):
@@ -62,5 +68,244 @@ class CaClockWeatherWidget(WidgetBase):
     def run(self) -> None:
         self.run_loop(lambda: self.render_calendar_clock_weather_4w(W=1920, H=1080), tick_seconds=1.0)
 
+# -----------------------------------------------------------------------------
+# Панель "Шлагбаум / номера" как widget-source (как calclockweather)
+# -----------------------------------------------------------------------------
+
+class PlateGateWidget(WidgetBase):
+    """Панель сценария въезда (пока только въезд).
+
+    Рендерится как картинка (как камера), но с кликабельными зонами:
+      - "Подтвердить" (auto)
+      - "Принять ввод" (manual)
+      - "Открыть" (ручное)
+      - "Mute" (звук)
+
+    Ввод номера — через QInputDialog при клике по зоне ввода.
+    """
+
+    _BTN_CONFIRM = (0.06, 0.58, 0.46, 0.66)
+    _BTN_APPLY   = (0.54, 0.58, 0.94, 0.66)
+    _BTN_OPEN    = (0.06, 0.70, 0.62, 0.78)
+    _BTN_MUTE    = (0.68, 0.70, 0.94, 0.78)
+    _FIELD_INPUT = (0.06, 0.46, 0.94, 0.54)
+
+    def __init__(self, camera_id: str, ui_queue, stop_event):
+        super().__init__(camera_id, ui_queue, stop_event)
+        self._lock = threading.Lock()
+
+        self.entry_motion: bool = False
+        self.entry_status: str = "Ожидание автомобиля"
+        self.entry_plate_auto: str = ""
+        self.entry_plate_manual: str = ""
+        self._wait_elapsed: int = 0
+        self._alarm_fired: bool = False
+        self.alarm_muted: bool = False
+        self._log: List[str] = []
+
+        WIDGET_CONTROLLERS[self.camera_id] = self
+
+    def _append_log(self, text: str) -> None:
+        ts = _time.strftime("%H:%M:%S")
+        self._log.append(f"{ts}  {text}")
+        self._log = self._log[-12:]
+
+    def _start_wait(self) -> None:
+        self._wait_elapsed = 0
+        self._alarm_fired = False
+
+    def _stop_wait(self) -> None:
+        self._wait_elapsed = 0
+        self._alarm_fired = False
+
+    def _tick_wait(self) -> None:
+        with self._lock:
+            if not self.entry_motion:
+                return
+            self._wait_elapsed += 1
+            if self._wait_elapsed % 5 == 0:
+                self._append_log(f"Ожидание действия охранника: {self._wait_elapsed} с.")
+            if (not self._alarm_fired) and self._wait_elapsed >= 10:
+                self._alarm_fired = True
+                self.entry_status = "⚠ Нет подтверждения/действия более 10 секунд."
+                self._append_log("⚠ Тревога: авто стоит без подтверждения >10с.")
+                if not self.alarm_muted:
+                    self._append_log("Звуковое оповещение (заглушка): сигнал тревоги.")
+
+    # Заглушки действий
+    def action_confirm(self) -> None:
+        with self._lock:
+            plate = self.entry_plate_auto.strip()
+            if not plate:
+                self.entry_status = "Нет распознанного номера для подтверждения."
+                self._append_log("Нечего подтверждать: распознанный номер пустой.")
+                return
+            self.entry_status = f"Номер {plate} подтверждён. Открываем шлагбаум…"
+            self._append_log(f"Подтверждён номер (auto): {plate}. Открываем шлагбаум.")
+            self._stop_wait()
+        self._append_log("Команда открыть шлагбаум (заглушка) отправлена.")
+
+    def action_manual_apply(self, plate_text: str) -> None:
+        plate_text = (plate_text or "").strip().upper()
+        if not plate_text:
+            with self._lock:
+                self.entry_status = "Введите номер вручную, если распознавание ошиблось."
+                self._append_log("Ввод номера пустой — ничего не делаем.")
+            return
+        with self._lock:
+            self.entry_plate_manual = plate_text
+            self.entry_status = f"Ручной номер {plate_text} принят. Открываем шлагбаум…"
+            self._append_log(f"Ручной ввод: {plate_text}. Сохраняем в датасет (позже) и открываем.")
+            self._stop_wait()
+        self._append_log("Сохранение training-sample (заглушка): кадр+номер.")
+        self._append_log("Команда открыть шлагбаум (заглушка) отправлена.")
+
+    def action_open_manual(self) -> None:
+        with self._lock:
+            self.entry_status = "Ручное открытие шлагбаума."
+            self._append_log("Ручное открытие шлагбаума (без номера).")
+            self._stop_wait()
+        self._append_log("Команда открыть шлагбаум (заглушка) отправлена.")
+
+    def action_toggle_mute(self) -> None:
+        with self._lock:
+            self.alarm_muted = not self.alarm_muted
+            self._append_log("Звуковое оповещение отключено." if self.alarm_muted else "Звуковое оповещение включено.")
+            if self.alarm_muted and self._alarm_fired:
+                self._alarm_fired = False
+
+    def handle_ui_click(self, rel_x: float, rel_y: float, parent: QtWidgets.QWidget) -> bool:
+        def hit(r):
+            x0, y0, x1, y1 = r
+            return x0 <= rel_x <= x1 and y0 <= rel_y <= y1
+
+        if hit(self._BTN_CONFIRM):
+            self.action_confirm()
+            return True
+
+        if hit(self._BTN_APPLY):
+            with self._lock:
+                cur = self.entry_plate_manual or ""
+            if not cur:
+                text, ok = QtWidgets.QInputDialog.getText(parent, "Ручной ввод номера", "Введите номер:")
+                if ok:
+                    self.action_manual_apply(text)
+            else:
+                self.action_manual_apply(cur)
+            return True
+
+        if hit(self._FIELD_INPUT):
+            text, ok = QtWidgets.QInputDialog.getText(parent, "Ручной ввод номера", "Введите номер:")
+            if ok:
+                self.action_manual_apply(text)
+            return True
+
+        if hit(self._BTN_OPEN):
+            self.action_open_manual()
+            return True
+
+        if hit(self._BTN_MUTE):
+            self.action_toggle_mute()
+            return True
+
+        return False
+
+    def _render_panel(self, W: int = 1920, H: int = 1080) -> np.ndarray:
+        # локальные алиасы на палитру
+        C = DS.color
+
+        def rr(draw: ImageDraw.ImageDraw, box, r: int, fill, outline=None, w: int = 1):
+            # PIL умеет rounded_rectangle
+            draw.rounded_rectangle(box, radius=r, fill=fill, outline=outline, width=w)
+
+        def card(draw: ImageDraw.ImageDraw, box):
+            rr(draw, box, r=DS.radii.lg, fill=C.panel, outline=C.grid, w=2)
+
+        with self._lock:
+            status = self.entry_status
+            motion = self.entry_motion
+            auto_plate = self.entry_plate_auto
+            manual_plate = self.entry_plate_manual
+            muted = self.alarm_muted
+            wait = self._wait_elapsed
+            log_lines = list(self._log)
+
+        img = Image.new("RGB", (W, H), C.bg)
+        d = ImageDraw.Draw(img)
+
+        pad = 36
+        d.text((pad, pad), "Шлагбаум — ВЪЕЗД", fill=C.text, font=FONT28 or FONT24)
+
+        badge = "ДВИЖЕНИЕ" if motion else "ОЖИДАНИЕ"
+        badge_fill = C.ok if motion else C.sub
+        rr(d, (W - 360, pad - 4, W - pad, pad + 40), r=14, fill=badge_fill)
+        d.text((W - 340, pad + 4), badge, fill=C.bg, font=FONT18 or FONT16)
+
+        y = pad + 70
+        card(d, (pad, y, W - pad, y + 220))
+        d.text((pad + 24, y + 18), "Статус", fill=C.sub, font=FONT18 or FONT16)
+        d.text((pad + 24, y + 54), status, fill=C.text, font=FONT24 or FONT20)
+
+        d.text((pad + 24, y + 118), f"Auto:  {auto_plate or '—'}", fill=C.text, font=FONT20)
+        d.text((pad + 24, y + 154), f"Manual: {manual_plate or '—'}", fill=C.text, font=FONT20)
+        d.text((W - pad - 420, y + 154), f"Ожидание: {wait:>2} c", fill=C.sub, font=FONT18 or FONT16)
+
+        # поле ввода (как “input”)
+        x0, y0, x1, y1 = self._FIELD_INPUT
+        bx0 = int(x0 * W);
+        by0 = int(y0 * H);
+        bx1 = int(x1 * W);
+        by1 = int(y1 * H)
+        rr(d, (bx0, by0, bx1, by1), r=18, fill=C.cell, outline=C.grid, w=2)
+        d.text((bx0 + 18, by0 + 14), manual_plate or "Ввести номер…", fill=C.text, font=FONT24 or FONT20)
+
+        def draw_btn(r, title, kind="primary"):
+            x0, y0, x1, y1 = r
+            rx0 = int(x0 * W);
+            ry0 = int(y0 * H);
+            rx1 = int(x1 * W);
+            ry1 = int(y1 * H)
+
+            if kind == "primary":
+                fill = C.ok
+                txt = C.bg
+            elif kind == "danger":
+                fill = C.alert
+                txt = C.bg
+            else:
+                fill = C.cell
+                txt = C.text
+
+            rr(d, (rx0, ry0, rx1, ry1), r=18, fill=fill, outline=C.grid, w=2)
+            bbox = d.textbbox((0, 0), title, font=FONT20 or FONT18)
+            tw = bbox[2] - bbox[0]
+            th = bbox[3] - bbox[1]
+            d.text((rx0 + (rx1 - rx0 - tw) // 2, ry0 + (ry1 - ry0 - th) // 2), title, fill=txt, font=FONT20 or FONT18)
+
+        draw_btn(self._BTN_CONFIRM, "Подтвердить (auto)", "primary")
+        draw_btn(self._BTN_APPLY, "Принять (manual)", "primary")
+        draw_btn(self._BTN_OPEN, "Открыть шлагбаум", "danger")
+        draw_btn(self._BTN_MUTE, "Mute: ON" if muted else "Mute: OFF", "secondary")
+
+        # лог
+        ly0 = int(0.80 * H)
+        card(d, (pad, ly0, W - pad, H - pad))
+        d.text((pad + 24, ly0 + 16), "Лог", fill=C.sub, font=FONT18 or FONT16)
+        yy = ly0 + 50
+        for line in log_lines[-8:]:
+            d.text((pad + 24, yy), line, fill=C.text, font=FONT16)
+            yy += 28
+
+        # PIL -> OpenCV (BGR)
+        return np.array(img)[:, :, ::-1].copy()
+
+    def run(self) -> None:
+        def _render():
+            # тик ожидания (10 секунд, тревога и т.д.)
+            self._tick_wait()
+            return self._render_panel(1920, 1080)
+
+        # как у calclockweather: ловим исключения и продолжаем жить
+        self.run_loop(_render, tick_seconds=0.5)
 
 

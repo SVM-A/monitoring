@@ -207,7 +207,15 @@ PLATE_DETECTION_CAMERAS: set[str] = {
     # "dual-sky",
 }
 
+# --- plate detector model ---
+PLATE_YOLO_MODEL_PATH: str = str(BASE_PATH / "app/models/plate_detector/license-plate-finetune-v1s.pt")
+
+
 # Камеры, на которых включена детекция движения (motion-gate).
 # Пока оставим равным PLATE_DETECTION_CAMERAS,
 # но в будущем можно разнести.
 MOTION_DETECTION_CAMERAS: set[str] = set(PLATE_DETECTION_CAMERAS)
+
+# Путь к весам YOLO для детектора госномеров.
+# Файл ожидается в: app/models/plate_detector/license-plate-finetune-v1s.pt
+PLATE_YOLO_MODEL_PATH: str = str(BASE_PATH / "app/models/plate_detector/license-plate-finetune-v1s.pt")

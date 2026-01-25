@@ -1,10 +1,12 @@
-# app/qt/widgets/camera_controls.py
+# app/qt/widgets/camera_сontrols.py
 from __future__ import annotations
 from typing import Dict, Optional
 
 from PyQt6 import QtCore, QtWidgets
 
 from app.core.config_cams import CAM_SOURCES
+
+### Camera controls
 
 class CameraControlDock(QtWidgets.QDockWidget):
     """Док 'Видео': выбор камеры/потока и параметры прокси (ширина/высота/битрейт/т.д.)."""
@@ -150,3 +152,4 @@ class CameraControlDock(QtWidgets.QDockWidget):
         cam_id = self.cam.currentData() or self.cam.currentText()
         if cam_id:
             self.recordStopRequested.emit(cam_id)
+

@@ -19,6 +19,8 @@ from app.qt.window_manager import WindowManager
 from app.util.mask import mask_url
 from app.video.ffproxy import FrameGrabber
 from app.camera.camera_bootstrap import load_cameras, prepare_runtime
+from app.widgets.widgets import PlateGateWidget
+
 
 def redirect_stderr_to_rotating_log(filepath="logs/ffmpeg_stderr.log", max_bytes=10*1024*1024, backup_count=3):
     """
@@ -116,6 +118,8 @@ def main(selected_cams):
                 w = ClockWidget(cam_id, ui_queue, stop_event_threads)
             elif wtype == "holidays":
                 w = HolidaysWidget(cam_id, ui_queue, stop_event_threads)
+            elif wtype == "plategate":
+                w = PlateGateWidget(cam_id, ui_queue, stop_event_threads)
             else:
                 print(f"[{cam_id}] unknown widget '{wtype}', skip")
                 continue

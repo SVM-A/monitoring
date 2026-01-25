@@ -9,7 +9,6 @@ from PyQt6 import QtCore, QtGui, QtWidgets
 from app.core.config_cams import CAM_SOURCES, GLOBAL_ROI, PLATE_DETECTION_CAMERAS
 from app.ui.layout import compose_focus_layout, compose_named_layout
 from app.video.ffproxy import apply_roi
-from app.detector.plate_stub import detect_plate
 from app.video.recording import is_recording_source, next_frame_for, recording_by_id
 
 _VSEP = ":"
@@ -20,6 +19,7 @@ class CanvasWidget(QtWidgets.QWidget):
         super().__init__(parent)
         self.latest = latest
         self.focus_id: Optional[str] = None
+        self.fullscreen_id: Optional[str] = None
         self.widget_ids: List[str] = [
             cid for cid, spec in CAM_SOURCES.items() if spec.get("type") == "widget"
         ]
@@ -94,7 +94,7 @@ class CanvasWidget(QtWidgets.QWidget):
 
                         # лёгкий детектор номера поверх ROI
                         try:
-                            plate, bbox = detect_plate(roi_frame)
+                            pass
                         except Exception:
                             plate, bbox = None, None
 
@@ -126,7 +126,7 @@ class CanvasWidget(QtWidgets.QWidget):
                             continue
 
                         try:
-                            plate, bbox = detect_plate(roi_frame)
+                            pass
                         except Exception:
                             plate, bbox = None, None
                         if bbox:
@@ -249,26 +249,48 @@ class CanvasWidget(QtWidgets.QWidget):
 
         # --- левый клик: как было — переключение фокуса/выбор камеры ---
         if e.button() == QtCore.Qt.MouseButton.LeftButton:
-            # скроллбар справа
-            if self._sb_active and self._sb_track.contains(x, y):
-                max_scroll = max(0, self._right_total - self.height())
-                if self._sb_thumb.contains(x, y):
-                    self._sb_dragging = True
-                    self._sb_drag_offset = y - self._sb_thumb.top()
-                    return
-                else:
-                    rel = (y - self._sb_track.top()) / max(1.0, self._sb_track.height() - self._sb_thumb.height())
-                    rel = min(max(rel, 0.0), 1.0)
-                    self._right_scroll = int(rel * max_scroll)
-                    self.update()
-                    return
-
-            # выбор камеры/виджета по плитке
+            # клики по плиткам (и камеры, и виджеты)
             for cid, (x0, y0, x1, y1) in self.last_rects.items():
-                if x0 <= x <= x1 and y0 <= y <= y1:
-                    self.focus_id = None if self.focus_id == cid else cid
-                    self.update()
-                    break
+                if not (x0 <= x <= x1 and y0 <= y <= y1):
+                    continue
+
+                base_id = self._base_cam(cid) if self._is_virtual_half(cid) else cid
+                spec = CAM_SOURCES.get(base_id, {}) or {}
+
+                # интерактивные виджеты должны быть кликабельными всегда (и в сетке, и в fullscreen)
+                if spec.get("type") == "widget" and spec.get("widget") == "plategate":
+                    from app.widgets.widgets import WIDGET_CONTROLLERS
+                    ctrl = WIDGET_CONTROLLERS.get(base_id)
+                    if ctrl is not None and getattr(ctrl, "handle_ui_click", None):
+                        rel_x = (x - x0) / max(1.0, (x1 - x0))
+                        rel_y = (y - y0) / max(1.0, (y1 - y0))
+                        if ctrl.handle_ui_click(rel_x, rel_y, self):
+                            self.update()
+                            return
+
+                # Обычный одиночный клик по камерам/виджетам больше ничего не делает
+                return
+
+    def mouseDoubleClickEvent(self, e: QtGui.QMouseEvent):
+        p = e.position().toPoint()
+        x, y = p.x(), p.y()
+
+        if e.button() != QtCore.Qt.MouseButton.LeftButton:
+            return
+
+        # определяем по какой плитке был двойной клик
+        for cid, (x0, y0, x1, y1) in self.last_rects.items():
+            if not (x0 <= x <= x1 and y0 <= y <= y1):
+                continue
+
+            # toggle fullscreen
+            if self.fullscreen_id == cid:
+                self.fullscreen_id = None
+            else:
+                self.fullscreen_id = cid
+
+            self.update()
+            return
 
     def _open_aspect_menu(self, cid: str, global_pos: QtCore.QPoint):
         """
@@ -347,31 +369,41 @@ class CanvasWidget(QtWidgets.QWidget):
 
     def paintEvent(self, e: QtGui.QPaintEvent):
         visible = self._visible_frames()
-        focus_id = self.focus_id
 
         # собираем карту режимов для всех видимых
         aspect_map = self._build_aspect_map(visible)
 
-        # выходной размер (общий для обоих режимов)
         out_w = max(640, self.width())
         out_h = max(360, self.height())
 
-        if focus_id:
-            # режим с фокусом слева + колонка справа
-            canvas, rects, total_h = compose_focus_layout(
-                visible,
-                focus_id=focus_id,
-                widget_ids=self.widget_ids,
-                out_size=(out_w, out_h),
-                widget_size=(640, 360),
-                scroll_offset=self._right_scroll,
-                aspect_map=aspect_map,
-            )
-            self._right_total = total_h
-            self.last_rects = rects
+        # === FULLSCREEN (двойной клик) ===
+        if self.fullscreen_id:
+            cid = self.fullscreen_id
+            frame = visible.get(cid)
 
+            if frame is None:
+                # безопасный "no signal" на весь экран
+                canvas = np.zeros((out_h, out_w, 3), dtype=np.uint8)
+
+                # ASCII, чтобы не было ????? от OpenCV
+                spec = CAM_SOURCES.get(self._base_cam(cid) if self._is_virtual_half(cid) else cid, {}) or {}
+                if spec.get("type") == "widget":
+                    msg = f"WIDGET {cid} UNAVAILABLE"
+                else:
+                    msg = "NO SIGNAL"
+
+                cv2.putText(canvas, msg, (20, 60),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3, cv2.LINE_AA)
+            else:
+                mode = aspect_map.get(cid, "fit")
+                from app.ui.layout import fit_into_box_with_mode
+                canvas = fit_into_box_with_mode(frame, out_w, out_h, mode)
+
+            rects = {cid: (0, 0, out_w, out_h)}
+            self._right_total = out_h
+            self.last_rects = rects
         else:
-            # Нет фокуса → используем именованную сетку или auto
+            # === ВСЕГДА СЕТКА (никаких focus-колонок) ===
             if (self._layout_key or "auto") != "auto":
                 canvas, rects = compose_named_layout(
                     visible,
@@ -380,8 +412,6 @@ class CanvasWidget(QtWidgets.QWidget):
                     aspect_map=aspect_map,
                 )
             else:
-                # auto: compose_named_layout сам откатится в compose_grid,
-                # но нам нужны rects для хит-теста
                 canvas, rects = compose_named_layout(
                     visible,
                     "unknown",
@@ -391,7 +421,6 @@ class CanvasWidget(QtWidgets.QWidget):
             self._right_total = out_h
             self.last_rects = rects
 
-        # дальше – как у тебя уже было: QPainter, отрисовка canvas на виджет
         painter = QtGui.QPainter(self)
         img = QtGui.QImage(
             canvas.data, canvas.shape[1], canvas.shape[0],
@@ -401,13 +430,7 @@ class CanvasWidget(QtWidgets.QWidget):
         painter.end()
 
     def wheelEvent(self, e: QtGui.QWheelEvent):
-        if not self.focus_id:
-            return
-        delta = e.angleDelta().y()
-        step = 40 if delta < 0 else -40
-        max_scroll = max(0, self._right_total - self.height())
-        self._right_scroll = int(min(max(self._right_scroll + step, 0), max_scroll))
-        self.update()
+        return
 
     def set_allowed_ids(self, ids: List[str]):
         self.allowed_ids = list(ids) if ids else None

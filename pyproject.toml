@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "monitoring"
-description = "Backend application. See API docs at http://localhost:55666/catalog/docs & http://localhost:55666/platform/docs"
+description = "Backend application"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "Proprietary" }
@@ -25,7 +25,9 @@ dependencies = [
     "requests>=2.32.5",
     "PyQt6>=6.9.1",
     "cairosvg>=2.8.2",
-    "onvif-zeep>=0.2.12"
+    "onvif-zeep>=0.2.12",
+    "ultralytics>=8.4.7",
+    "pytesseract>=0.3.13"
 ]
 
 [project.optional-dependencies]

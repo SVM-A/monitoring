@@ -1,113 +1,195 @@
 # app/detector/engine.py
+"""
+ENGINE: Тяжёлая часть (детектор рамки номера; позже добавим OCR).
+
+СЕЙЧАС (Этап 1):
+- Используем YOLOv11 weights (.pt) от morsetechlab, которую ты уже проверил.
+- Возвращаем bbox + score.
+- text пока None (OCR подключим на Этапе 2).
+
+БУДУЩЕЕ (Этап 2):
+- Добавить OCR по crop номера (fast-plate-ocr или другое).
+- Возвращать text + комбинированный score (min(yolo_conf, ocr_conf) или умнее).
+- Добавить нормализацию текста + лёгкие "починки" (O/0, B/8 и т.д.) по необходимости.
+
+ПЛАН (сверху вниз):
+1) Этап 1: bbox детекция YOLO ✅
+2) Этап 2: OCR + text + фильтры по длине/формату
+3) Этап 3: авто-тюнинг conf/imgsz под камеру + логирование метрик
+"""
 
 from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
+import cv2
 import numpy as np
+from ultralytics import YOLO
+import pytesseract
+
+
+BBoxXYXY = Tuple[int, int, int, int]  # (x1, y1, x2, y2)
 
 
 @dataclass
 class PlateDetectionResult:
     """
-    Результат детекции для одного номера на кадре.
-    Координаты bbox — в системе координат того кадра, который подавали
-    на вход (обычно ROI кадр).
+    Результат детекции одного номера на одном кадре.
+
+    bbox:
+        В координатах того кадра, который подали в detect_*.
+        Если подали ROI-кадр — bbox тоже в ROI координатах (это ок для текущего этапа).
+
+    score:
+        Уверенность детектора (0..1), сейчас это YOLO conf.
+
+    text:
+        Пока None (OCR не подключён). На Этапе 2 станет строкой номера.
     """
-    text: str              # распознанный номер (строка)
-    bbox: Tuple[int, int, int, int]  # (x, y, w, h)
-    score: float           # уверенность (0..1)
-    frame_idx: int = 0     # опционально — индекс кадра в буфере, если детекция по нескольким
-    extra: dict = None     # запас на будущее (страна, тип номера, цвет и т.п.)
+    bbox: BBoxXYXY
+    score: float
+    text: Optional[str] = None
 
 
 class PlateDetectorEngine:
-    """
-    Обёртка над тяжёлой моделью(ями) для детекции номерного знака и OCR.
-
-    Внутри может быть:
-    - модель детекции рамки номера (YOLO/ONNX/TensorRT)
-    - модель OCR (CRNN/transformer/готовый EasyOCR)
-
-    Задачи:
-    - один раз инициализировать модели и выбрать устройство (GPU/CPU)
-    - предоставлять простой метод detect_on_roi() для пайплайна
-    - уметь батчить несколько ROI с разных камер
-    """
-
-    def __init__(self, device: str = "auto"):
-        """
-        device:
-            "auto"   — пытаемся использовать CUDA, если доступно, иначе CPU
-            "cpu"    — принудительно CPU
-            "cuda:0" — конкретный GPU, если много карт (актуально для Tesla)
-        Здесь:
-        - определяем доступность GPU (torch.cuda / tensorrt / onnxruntime-gpu)
-        - грузим веса моделей (пути/названия берём из конфига)
-        - подготавливаем всё к batched-инференсу
-        """
+    def __init__(
+        self,
+        model_path: str,
+        *,
+        conf: float = 0.25,
+        imgsz: int = 640,
+        verbose: bool = False,
+        device: str = "auto",
+        ocr_lang: str = "eng+rus",
+    ) -> None:
+        self.model_path = model_path
+        self.conf = conf
+        self.imgsz = imgsz
+        self.verbose = verbose
         self.device = device
-        # self.detector_model = ...
-        # self.ocr_model = ...
-        # здесь же удобно задать размер входа для детектора и OCR
-        raise NotImplementedError
+        self.ocr_lang = ocr_lang
 
-    def _preprocess_batch(self, roi_batch: List[np.ndarray]):
-        """
-        Подготовка батча ROI-кадров к подаче в модель:
-        - resize до нужного размера
-        - нормализация
-        - упаковка в тензор/массив для фреймворка (torch / onnxruntime)
-        Возвращаем структуру, которую понимает модель.
-        """
-        raise NotImplementedError
+        self.model = YOLO(self.model_path)
 
-    def _run_detector(self, preprocessed_batch):
-        """
-        Запуск модели детекции рамки номера.
-        Возвращает сырые боксы + скоры для каждого ROI в батче.
-        Тип возврата — на твой вкус (список list[ndarray] или что-то подобное).
-        """
-        raise NotImplementedError
+        # Разрешённые символы РФ-номера (латиница + кириллица похожие)
+        self._whitelist = "ABEKMHOPCTYX0123456789АВЕКМНОРСТУХ"
 
-    def _crop_plate_regions(self, roi_batch: List[np.ndarray], raw_detections) -> List[np.ndarray]:
-        """
-        По сырым детекциям и исходным ROI кадрам:
-        - приводим боксы к целым пикселям
-        - фильтруем по размеру/соотношению сторон (типичные номера)
-        - вырезаем фрагменты картинок с номерами.
-        Возвращаем список plate_image'ов (может быть больше, чем ROI, если несколько номеров).
-        """
-        raise NotImplementedError
+        # Нормализация: приводим кириллицу к “латинским” эквивалентам ГОСТ-номера
+        self._cyr_to_lat = str.maketrans({
+            "А":"A","В":"B","Е":"E","К":"K","М":"M","Н":"H","О":"O","Р":"P","С":"C","Т":"T","У":"Y","Х":"X",
+        })
 
-    def _run_ocr(self, plate_images: List[np.ndarray]) -> List[Tuple[str, float]]:
-        """
-        Запуск OCR-модели по каждому вырезанному номеру.
-        Возвращаем список (text, score) для каждого входного изображения.
-        """
-        raise NotImplementedError
+    def _crop(self, frame: np.ndarray, bbox: BBoxXYXY) -> np.ndarray:
+        h, w = frame.shape[:2]
+        x1, y1, x2, y2 = bbox
+        x1 = max(0, min(w - 1, x1))
+        y1 = max(0, min(h - 1, y1))
+        x2 = max(0, min(w, x2))
+        y2 = max(0, min(h, y2))
+        if x2 <= x1 or y2 <= y1:
+            return np.empty((0, 0, 3), dtype=frame.dtype)
+        return frame[y1:y2, x1:x2]
 
-    def detect_on_roi(self, roi_batch: List[np.ndarray]) -> List[List[PlateDetectionResult]]:
-        """
-        Высокоуровневый метод: вся тяжёлая магия в одном шаге.
+    def _prep_for_ocr(self, plate_img: np.ndarray) -> np.ndarray:
+        if plate_img is None or plate_img.size == 0:
+            return plate_img
 
-        Вход:
-            roi_batch — список ROI-кадров (один или несколько, с разных камер).
+        gray = cv2.cvtColor(plate_img, cv2.COLOR_BGR2GRAY)
+        gray = cv2.bilateralFilter(gray, 7, 50, 50)
 
-        Логика:
-        1) preprocess_batch(...)
-        2) raw_detections = _run_detector(...)
-        3) plate_images = _crop_plate_regions(roi_batch, raw_detections)
-           (и сопоставить, какой plate к какому ROI относится)
-        4) texts_scores = _run_ocr(plate_images)
-        5) собрать список PlateDetectionResult по каждому ROI:
-            [
-              [PlateDetectionResult(...), ...],  # для ROI 0
-              [PlateDetectionResult(...), ...],  # для ROI 1
-              ...
-            ]
+        # увеличим (tesseract любит крупнее)
+        h, w = gray.shape[:2]
+        scale = 2.0 if max(h, w) < 220 else 1.5
+        gray = cv2.resize(gray, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_CUBIC)
 
-        Важно:
-        - здесь не занимаемся дедупликацией по времени, только детекция текущего батча.
-        """
-        raise NotImplementedError
+        # бинаризация
+        gray = cv2.adaptiveThreshold(
+            gray, 255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY,
+            31, 7
+        )
+        return gray
+
+    def _ocr_text_and_conf(self, plate_img: np.ndarray) -> tuple[str | None, float]:
+        if plate_img is None or plate_img.size == 0:
+            return None, 0.0
+
+        img = self._prep_for_ocr(plate_img)
+
+        cfg = (
+            f'--oem 1 --psm 7 '
+            f'-c tessedit_char_whitelist={self._whitelist}'
+        )
+
+        data = pytesseract.image_to_data(img, lang=self.ocr_lang, config=cfg, output_type=pytesseract.Output.DICT)
+
+        parts = []
+        confs = []
+        n = len(data.get("text", []))
+        for i in range(n):
+            txt = (data["text"][i] or "").strip()
+            if not txt:
+                continue
+            try:
+                c = float(data["conf"][i])
+            except Exception:
+                c = -1.0
+            if c > 0:
+                confs.append(c)
+            parts.append(txt)
+
+        raw = "".join(parts).upper()
+        raw = re.sub(r"[^0-9A-ZА-Я]", "", raw)
+
+        if not raw:
+            return None, 0.0
+
+        # нормализация к “латинскому” виду номера
+        norm = raw.translate(self._cyr_to_lat)
+
+        conf = float(sum(confs) / len(confs)) if confs else 0.0
+        # conf из tesseract обычно 0..100
+        return norm, conf / 100.0
+
+    def detect_one(self, frame: np.ndarray) -> List[PlateDetectionResult]:
+        if frame is None or frame.size == 0:
+            return []
+
+        results = self.model.predict(
+            source=frame,
+            conf=self.conf,
+            imgsz=self.imgsz,
+            verbose=self.verbose,
+            device=self.device if self.device != "auto" else None,
+        )
+
+        r0 = results[0]
+        if r0.boxes is None or len(r0.boxes) == 0:
+            return []
+
+        out: List[PlateDetectionResult] = []
+        for b in r0.boxes:
+            x1, y1, x2, y2 = map(int, b.xyxy[0].tolist())
+            yolo_score = float(b.conf[0].item())
+
+            crop = self._crop(frame, (x1, y1, x2, y2))
+            text, ocr_score = self._ocr_text_and_conf(crop)
+
+            # итоговая уверенность
+            final_score = yolo_score * (ocr_score if ocr_score > 0 else 0.5)
+
+            out.append(
+                PlateDetectionResult(
+                    bbox=(x1, y1, x2, y2),
+                    score=float(final_score),
+                    text=text,
+                )
+            )
+
+        out.sort(key=lambda d: d.score, reverse=True)
+        return out
+
+    def detect_on_roi(self, frames: List[np.ndarray]) -> List[List[PlateDetectionResult]]:
+        return [self.detect_one(f) for f in frames]

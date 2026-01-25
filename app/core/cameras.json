@@ -134,6 +134,7 @@
       "onvif": { "mode": "proxy", "host":"192.168.100.198", "port":8899, "user_env":"CAM2_USER", "pass_env":"CAM1_PASS", "profile_token":"Profile_1" },
       "desired": {"mode": "direct", "width":1920,"height":2160,"bitrate_kbps":2500,"fps":25,"gop":50}
     },
-    "calclockweather": { "type":"widget", "widget":"calclockweather" }
+    "calclockweather": { "type":"widget", "widget":"calclockweather" },
+    "plategate": { "type":"widget", "widget":"plategate" }
   }
 }

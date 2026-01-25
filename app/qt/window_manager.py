@@ -11,7 +11,6 @@ from app.util.mask import mask_url
 from app.qt.widgets.right_sidebar import RightSidebarDock
 from app.qt.runtime import load_views, ViewSpec, FrameBus
 from app.video.recording import RecordingManager
-from app.qt.widgets.gate_control import GateControlDock
 
 class MainWindow(QtWidgets.QMainWindow):
     viewChanged = QtCore.pyqtSignal(str)  # если уже есть — ок
@@ -48,9 +47,6 @@ class MainWindow(QtWidgets.QMainWindow):
         # == Единая правая панель (табы «Окна» / «Видео») ==
         self.sidebar = RightSidebarDock(self)
         self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, self.sidebar)
-        # --- Отдельное окно «Шлагбаум» ---
-        self.gateDock = GateControlDock(self)
-        self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, self.gateDock)
 
         # Размещаем под основной правой панелью (вертикальный сплит)
         try:
@@ -171,29 +167,9 @@ class MainWindow(QtWidgets.QMainWindow):
         act_sidebar.triggered.connect(self._ensure_sidebar_visible)
         menu_view.addAction(act_sidebar)
 
-        # Отдельная панель шлагбаума
-        self._act_gate = QtGui.QAction("Панель шлагбаума", self)
-        self._act_gate.setCheckable(True)
-        self._act_gate.setChecked(True)  # по умолчанию показана
-        self._act_gate.triggered.connect(self._toggle_gate_dock)
-        menu_view.addAction(self._act_gate)
-
     def apply_view_source(self, cid: Optional[str]):
-        """Применить выбранный источник в это окно: камера/виджет в фокус слева."""
-        if cid:
-            self.canvas.set_focus(cid)   # канвас сам нарисует фокус + правую колонку
-        else:
-            self.canvas.set_focus(None)
-
-    def _toggle_gate_dock(self, checked: bool) -> None:
-        """Показ/скрытие окна шлагбаума из меню «Вид»."""
-        dock = getattr(self, "gateDock", None)
-        if dock is None:
-            return
-        if checked:
-            dock.show()
-        else:
-            dock.hide()
+        # больше не используем фокус-режим, только сетки/виджеты
+        self.canvas.set_focus(None)
 
     def _apply_views_to_canvas(self, *args):
         """
