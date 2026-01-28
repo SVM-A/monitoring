@@ -15,7 +15,15 @@ from app.db.camera_registry import load_plategate_settings, save_plategate_setti
 
 WIDGET_CONTROLLERS: Dict[str, object] = {}
 
+SOURCE_STARTER = None  # type: ignore
 
+def set_source_starter(fn):
+    """
+    WindowManager прокидывает сюда функцию ensure_source_running,
+    чтобы виджеты могли лениво запускать источники (записи/камеры).
+    """
+    global SOURCE_STARTER
+    SOURCE_STARTER = fn
 
 class CalendarWidget(WidgetBase):
     """Только 2 календаря (текущий + следующий). Обновляется раз в 30 сек."""
@@ -387,6 +395,12 @@ class PlateGateWidget(WidgetBase):
             chosen = str(sel)
             self.control_camera_id = chosen
             base_id = chosen[:-len(" [ROI]")] if chosen.endswith(" [ROI]") else chosen
+
+        try:
+            if callable(SOURCE_STARTER) and base_id:
+                SOURCE_STARTER(base_id)
+        except Exception:
+            pass
         # persist + отправим в процесс
         save_plategate_settings(control_camera_id=base_id, recognition_enabled=self.recognition_enabled)
         try:
@@ -395,6 +409,10 @@ class PlateGateWidget(WidgetBase):
             pass
 
     def action_toggle_recognition(self) -> None:
+        # base_id нужен и для стартера, и для processor_proc
+        cid = self.control_camera_id or ""
+        base_id = cid[:-len(" [ROI]")] if cid.endswith(" [ROI]") else cid
+
         with self._lock:
             self.recognition_enabled = not self.recognition_enabled
             enabled = self.recognition_enabled
@@ -405,11 +423,21 @@ class PlateGateWidget(WidgetBase):
                 self.entry_status = "Распознавание выключено."
                 self.entry_plate_auto = ""
 
-        save_plategate_settings(control_camera_id=self.control_camera_id, recognition_enabled=self.recognition_enabled)
+        # Если включаем — попробуем лениво стартануть источник (архив/rtsp)
+        if enabled:
+            try:
+                if callable(SOURCE_STARTER) and base_id:
+                    SOURCE_STARTER(base_id)
+            except Exception:
+                pass
 
+        # persist
+        save_plategate_settings(control_camera_id=base_id, recognition_enabled=enabled)
+
+        # команды в процесс
         try:
-            if self.control_camera_id:
-                self.plate_control_queue.put_nowait({"type": "plate_set_camera", "camera_id": self.control_camera_id})
+            if base_id:
+                self.plate_control_queue.put_nowait({"type": "plate_set_camera", "camera_id": base_id})
             self.plate_control_queue.put_nowait({"type": "plate_enable" if enabled else "plate_disable"})
         except Exception:
             pass
@@ -423,26 +451,48 @@ class PlateGateWidget(WidgetBase):
 
         if et == "plate_status":
             cam_id = str(ev.get("camera_id") or "")
+            stage = str(ev.get("stage") or "")  # <-- ВАЖНО: stage уже приходит из worker
             msg = str(ev.get("message") or "")
 
-            # показываем статусы либо глобальные, либо относящиеся к выбранной камере
             with self._lock:
-                if not cam_id or cam_id == self.control_camera_id:
-                    if msg:
-                        self.entry_status = msg
+                cur = self.control_camera_id or ""
+                cur_base = cur[:-len(" [ROI]")] if cur.endswith(" [ROI]") else cur
+                if cam_id and (cam_id != cur_base):
+                    return
+
+                # 1) Обновляем статус-текст
+                if msg:
+                    self.entry_status = msg
+
+                # 2) КЛЮЧ: если вернулись в idle (мониторинг), значит авто ушло/сцена чистая.
+                #    Сбрасываем ожидание охранника и отключаем тревогу.
+                if stage in ("idle", "none"):
+                    if self.entry_motion or self._wait_elapsed or self._alarm_fired:
+                        self._append_log("Авто ушло / нет активности. Возврат в режим мониторинга.")
+                    self.entry_motion = False
+                    self._stop_wait()
+                    # опционально: чистим авто-номер, чтобы не висел старый
+                    self.entry_plate_auto = ""
+                    # self.entry_plate_manual = ""  # если надо, можно тоже сбрасывать
+
             return
 
         if et == "plate_detection":
             cam_id = str(ev.get("camera_id") or "")
             text = str(ev.get("text") or "").strip().upper()
-            if not text:
-                return
 
             with self._lock:
-                if cam_id != self.control_camera_id:
+                cur = self.control_camera_id or ""
+                cur_base = cur[:-len(" [ROI]")] if cur.endswith(" [ROI]") else cur
+                if cam_id != cur_base:
                     return
-                self.entry_plate_auto = text
-                self.entry_status = f"Номер распознан: {text}. Ожидание подтверждения…"
+                if text:
+                    self.entry_plate_auto = text
+                    self.entry_status = f"Номер распознан: {text}. Ожидание подтверждения…"
+                    self._append_log(f"Авто-номер: {text}")
+                else:
+                    # просто отметим, что детекция была
+                    self.entry_status = "Найден номерной знак. Распознаю символы…"
                 self.entry_motion = True
                 self._start_wait()
                 self._append_log(f"Авто-номер: {text}")
@@ -456,6 +506,6 @@ class PlateGateWidget(WidgetBase):
             return self._render_panel(1920, 1080)
 
         # как у calclockweather: ловим исключения и продолжаем жить
-        self.run_loop(_render, tick_seconds=0.5)
+        self.run_loop(_render, tick_seconds=1.0)
 
 

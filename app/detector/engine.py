@@ -20,6 +20,7 @@ ENGINE: Тяжёлая часть (детектор рамки номера; п�
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
@@ -60,6 +61,7 @@ class PlateDetectorEngine:
         conf: float = 0.25,
         imgsz: int = 640,
         verbose: bool = False,
+        enable_ocr: bool = False,
         device: str = "auto",
         ocr_lang: str = "eng+rus",
     ) -> None:
@@ -69,6 +71,8 @@ class PlateDetectorEngine:
         self.verbose = verbose
         self.device = device
         self.ocr_lang = ocr_lang
+        self.enable_ocr = enable_ocr
+
 
         self.model = YOLO(self.model_path)
 
@@ -174,11 +178,15 @@ class PlateDetectorEngine:
             x1, y1, x2, y2 = map(int, b.xyxy[0].tolist())
             yolo_score = float(b.conf[0].item())
 
-            crop = self._crop(frame, (x1, y1, x2, y2))
-            text, ocr_score = self._ocr_text_and_conf(crop)
 
-            # итоговая уверенность
-            final_score = yolo_score * (ocr_score if ocr_score > 0 else 0.5)
+
+            crop = self._crop(frame, (x1, y1, x2, y2))
+            text = None
+            ocr_score = 0.0
+            if self.enable_ocr:
+                text, ocr_score = self._ocr_text_and_conf(crop)
+
+            final_score = yolo_score
 
             out.append(
                 PlateDetectionResult(

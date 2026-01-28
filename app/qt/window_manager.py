@@ -10,7 +10,7 @@ from app.video.ffproxy import FFProxyManager, ProxyParams, FrameGrabber
 from app.core.config_cams import CAM_SOURCES
 from app.util.mask import mask_url
 from app.qt.runtime import ProcEventBus
-from app.widgets.widgets import WIDGET_CONTROLLERS
+from app.widgets.widgets import WIDGET_CONTROLLERS, set_source_starter
 from app.qt.widgets.right_sidebar import RightSidebarDock
 from app.qt.runtime import load_views, ViewSpec, FrameBus
 from app.video.recording import RecordingManager
@@ -201,16 +201,6 @@ class MainWindow(QtWidgets.QMainWindow):
         # локальное окно не обязано реагировать
         pass
 
-    def _on_view_source(self, view_id: str, selected_ids: list):
-        w = self._wins.get(view_id)
-        if not w:
-            return
-
-        for sid in (selected_ids or []):
-            self.ensure_source_running(sid)
-
-        w._apply_views_to_canvas()
-
     def _on_view_added(self, view_id: str):
         # менеджер окон создаст экземпляр. Здесь ничего.
         pass
@@ -382,6 +372,12 @@ class WindowManager(QtWidgets.QWidget):
         self._views: List[ViewSpec] = load_views()
         self._wins: Dict[str, MainWindow] = {}
 
+        # даём виджетам возможность лениво стартовать источники (архив/rtsp)
+        try:
+            set_source_starter(self.ensure_source_running)
+        except Exception:
+            pass
+
     def boot(self):
         # поднять все окна из настроек
         for v in self._views:
@@ -443,18 +439,38 @@ class WindowManager(QtWidgets.QWidget):
 
     def _on_view_source(self, view_id: str, selected_ids: list):
         """
-        Теперь сигнал отдаёт список выбранных источников.
-        Фокус можно мягко синхронизировать на первую позицию (или убрать, если список пуст).
-        Отрисовку самого списка делает окно через собственный обработчик.
+        selected_ids — список источников (камеры/виджеты/ROI/половинки/записи).
+        Тут мы:
+          1) гарантируем, что базовые источники (камера/запись) реально запущены;
+          2) обновляем канвас окна под новый список.
         """
         w = self._wins.get(view_id)
         if not w:
             return
+
+        for sid in (selected_ids or []):
+            try:
+                self.ensure_source_running(sid)
+            except Exception:
+                pass
+
+        try:
+            w._apply_views_to_canvas()
+        except Exception:
+            pass
+
+        # Фокус не нужен (у тебя apply_view_source всё равно снимает фокус),
+        # но оставим мягкий вызов для совместимости
         if selected_ids:
-            # ставим фокус на первый выбранный источник — удобно при первом выборе
-            w.apply_view_source(selected_ids[0])
+            try:
+                w.apply_view_source(selected_ids[0])
+            except Exception:
+                pass
         else:
-            w.apply_view_source(None)
+            try:
+                w.apply_view_source(None)
+            except Exception:
+                pass
 
     _ROI_SUFFIX = " [ROI]"
 

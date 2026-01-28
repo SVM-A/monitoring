@@ -278,6 +278,15 @@ class FrameGrabber(Thread):
         self._pending_src = None
         self._switch_needed = False
 
+        # Если src — локальный файл (mp4/avi/...), не надо "reconnect" как для rtsp.
+        # На конце файла будем делать loop на начало.
+        self._is_file_src = False
+        try:
+            s = str(self.src or "")
+            self._is_file_src = os.path.exists(s) and os.path.isfile(s)
+        except Exception:
+            self._is_file_src = False
+
     def set_source(self, new_src: str):
         """Запросить смену источника (на прокси/обратно)."""
         self._pending_src = new_src
@@ -316,16 +325,31 @@ class FrameGrabber(Thread):
                 if self.cap is None or not self.cap.isOpened():
                     self.open_capture()
                     if not self.cap or not self.cap.isOpened():
-                        print(f"[{self.camera_id}] can't open stream, retry in {self.reconnect_delay}s")
+                        # print(f"[{self.camera_id}] can't open stream, retry in {self.reconnect_delay}s")
                         time.sleep(self.reconnect_delay)
                         continue
                     self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                 if self._switch_needed and self._pending_src:
                     self._switch_capture()
+
                 ret, frame = self.cap.read()
                 if not ret or frame is None:
-                    print(f"[{self.camera_id}] frame read failed, reconnecting...")
-                    self.cap.release()
+                    # Для файлов это чаще всего EOF: делаем loop на начало без ожиданий.
+                    if self._is_file_src and self.cap is not None:
+                        try:
+                            self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                            # небольшая пауза, чтобы не молотить CPU на мгновенном EOF
+                            time.sleep(0.01)
+                            continue
+                        except Exception:
+                            pass
+
+                    # Для RTSP/потоков — как раньше: ре-коннект
+                    print(f"[{self.camera_id}] frame read failed, reconnecting.")
+                    try:
+                        self.cap.release()
+                    except Exception:
+                        pass
                     self.cap = None
                     time.sleep(self.reconnect_delay)
                     continue

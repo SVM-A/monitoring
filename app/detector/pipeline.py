@@ -1,7 +1,9 @@
 # app/detector/pipeline.py
 from __future__ import annotations
 
-from typing import Dict, Optional, List, Tuple
+import math
+from dataclasses import dataclass
+from typing import Dict, Optional, List, Tuple, Callable, Any
 
 import numpy as np
 import cv2
@@ -17,6 +19,11 @@ PLATE_DUP_MAX_CENTER_DIST_REL: float = 0.2
 
 PLATE_MIN_TEXT_LEN: int = 4
 
+@dataclass
+class _LastDet:
+    ts: float
+    text: Optional[str]
+    bbox_xyxy: tuple[int, int, int, int]  # (x1,y1,x2,y2)
 
 class PlateDetectionPipeline:
     def __init__(
@@ -32,10 +39,10 @@ class PlateDetectionPipeline:
             conf=0.25,
             imgsz=640,
             verbose=False,
+            enable_ocr=False,
         )
 
-        # camera_id -> (text, bbox_xyxy, ts)
-        self._last_detection: Dict[str, Tuple[str, Tuple[int, int, int, int], float]] = {}
+        self._last_detection: Dict[str, _LastDet] = {}
 
     def _apply_roi(self, frame: np.ndarray, roi_conf: Optional[dict]) -> np.ndarray:
         if frame is None or frame.size == 0:
@@ -66,57 +73,78 @@ class PlateDetectionPipeline:
                 best = fr
         return best if best is not None else roi_buffer[-1]
 
-    def _is_duplicate(
-        self,
-        camera_id: str,
-        det: PlateDetectionResult,
-        ts: float,
-        roi_shape: Tuple[int, int],
-    ) -> bool:
-        if not det.text:
-            return False
+    def _bbox_center(self, bbox_xyxy: tuple[int, int, int, int]) -> tuple[float, float]:
+        x1, y1, x2, y2 = bbox_xyxy
+        return (x1 + x2) / 2.0, (y1 + y2) / 2.0
 
+    def _dist(self, a: tuple[float, float], b: tuple[float, float]) -> float:
+        return math.hypot(a[0] - b[0], a[1] - b[1])
+
+    def _is_duplicate(
+            self,
+            camera_id: str,
+            det_text: Optional[str],
+            det_bbox_xyxy: tuple[int, int, int, int],
+            now_ts: float,
+            frame_hw: tuple[int, int],
+    ) -> bool:
+        """
+        Анти-дубликаты:
+        - если есть text → сравниваем text
+        - если text нет → сравниваем bbox по центру
+        """
         last = self._last_detection.get(camera_id)
         if last is None:
             return False
 
-        last_text, last_bbox, last_ts = last
-
-        if ts - last_ts > PLATE_DUP_WINDOW_SEC:
+        # окно по времени
+        if (now_ts - last.ts) > PLATE_DUP_WINDOW_SEC:
             return False
 
-        if (last_text or "").upper() != det.text.upper():
-            return False
+        # ───── OCR режим ─────
+        if det_text and last.text:
+            return det_text == last.text
 
-        h, w = roi_shape
-        x1, y1, x2, y2 = last_bbox
-        cx1 = (x1 + x2) / 2.0
-        cy1 = (y1 + y2) / 2.0
+        # ───── bbox-only режим ─────
+        h, w = frame_hw
+        max_dist_px = PLATE_DUP_MAX_CENTER_DIST_REL * max(h, w)
 
-        X1, Y1, X2, Y2 = det.bbox
-        cx2 = (X1 + X2) / 2.0
-        cy2 = (Y1 + Y2) / 2.0
+        c1 = self._bbox_center(last.bbox_xyxy)
+        c2 = self._bbox_center(det_bbox_xyxy)
 
-        dist = ((cx2 - cx1) ** 2 + (cy2 - cy1) ** 2) ** 0.5
-        denom = float(max(1, min(h, w)))
-        dist_norm = dist / denom
-
-        return dist_norm <= PLATE_DUP_MAX_CENTER_DIST_REL
+        return self._dist(c1, c2) <= max_dist_px
 
     def process_frame(
-        self,
-        camera_id: str,
-        frame: np.ndarray,
-        roi_conf: Optional[dict],
-        ts: float,
+            self,
+            camera_id: str,
+            frame: np.ndarray,
+            roi_conf: Optional[dict],
+            ts: float,
+            force_detect: bool = False,
+            on_stage: Optional[Callable[[str, dict], None]] = None,
     ) -> Optional[PlateDetectionResult]:
+
+        def _stage(name: str, **payload: Any) -> None:
+            if on_stage:
+                try:
+                    on_stage(name, payload)
+                except Exception:
+                    pass
+
+        _stage("roi")
         roi_frame = self._apply_roi(frame, roi_conf)
         if roi_frame is None or roi_frame.size == 0:
             return None
 
-        should_trigger = self.motion_gate.update_and_check(camera_id, roi_frame, ts)
-        if not should_trigger:
-            return None
+        _stage("motion_check")
+
+        if not force_detect:
+            should_trigger = self.motion_gate.update_and_check(camera_id, roi_frame, ts)
+            if not should_trigger:
+                _stage("idle")
+                return None
+        else:
+            _stage("motion_trigger")
 
         roi_buffer = self.motion_gate.pop_buffer(camera_id)
         if roi_buffer and (roi_buffer[-1] is not roi_frame):
@@ -128,6 +156,8 @@ class PlateDetectionPipeline:
         if best_frame is None or best_frame.size == 0:
             return None
 
+        _stage("yolo")
+        _stage("ocr")
         detections = self.engine.detect_one(best_frame)
 
         # фильтруем мусор
@@ -135,21 +165,36 @@ class PlateDetectionPipeline:
         for d in detections:
             if d.score < PLATE_MIN_SCORE:
                 continue
-            if not d.text:
-                continue
-            if len(d.text) < PLATE_MIN_TEXT_LEN:
-                continue
+
+            # Этап 1: bbox-only. Текст не обязателен.
+            if d.text:
+                if len(d.text) < PLATE_MIN_TEXT_LEN:
+                    continue
+
             good.append(d)
 
         if not good:
+            _stage("none")
             return None
 
         good.sort(key=lambda x: x.score, reverse=True)
         best = good[0]
 
         h, w = roi_frame.shape[:2]
-        if self._is_duplicate(camera_id, best, ts, (h, w)):
+        if self._is_duplicate(
+                camera_id=camera_id,
+                det_text=best.text,
+                det_bbox_xyxy=best.bbox,
+                now_ts=ts,
+                frame_hw=(h, w),
+        ):
+            _stage("dup")
             return None
 
-        self._last_detection[camera_id] = (best.text, best.bbox, ts)
+        self._last_detection[camera_id] = _LastDet(
+            ts=ts,
+            text=best.text,
+            bbox_xyxy=best.bbox,
+        )
+        _stage("found", text=best.text, bbox=best.bbox, score=best.score)
         return best
