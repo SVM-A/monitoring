@@ -19,6 +19,12 @@ PLATE_DUP_MAX_CENTER_DIST_REL: float = 0.2
 
 PLATE_MIN_TEXT_LEN: int = 4
 
+PLATE_DUP_WINDOW_SEC_TEXT: float = 10.0
+PLATE_DUP_WINDOW_SEC_BBOX: float = 30.0
+
+PLATE_CLEAR_LAST_AFTER_IDLE_SEC: float = 2.5
+
+
 @dataclass
 class _LastDet:
     ts: float
@@ -39,10 +45,11 @@ class PlateDetectionPipeline:
             conf=0.25,
             imgsz=640,
             verbose=False,
-            enable_ocr=False,
+            enable_ocr=True,
         )
 
         self._last_detection: Dict[str, _LastDet] = {}
+        self._idle_since: Dict[str, float] = {}
 
     def _apply_roi(self, frame: np.ndarray, roi_conf: Optional[dict]) -> np.ndarray:
         if frame is None or frame.size == 0:
@@ -98,7 +105,8 @@ class PlateDetectionPipeline:
             return False
 
         # окно по времени
-        if (now_ts - last.ts) > PLATE_DUP_WINDOW_SEC:
+        dup_window = PLATE_DUP_WINDOW_SEC_TEXT if (det_text and last.text) else PLATE_DUP_WINDOW_SEC_BBOX
+        if (now_ts - last.ts) > dup_window:
             return False
 
         # ───── OCR режим ─────
@@ -142,9 +150,25 @@ class PlateDetectionPipeline:
             should_trigger = self.motion_gate.update_and_check(camera_id, roi_frame, ts)
             if not should_trigger:
                 _stage("idle")
+
+                # Если сцена стабильно "idle" — считаем, что авто уехало/сцена чистая
+                idle_since = self._idle_since.get(camera_id)
+                if idle_since is None:
+                    self._idle_since[camera_id] = ts
+                else:
+                    if (ts - idle_since) >= PLATE_CLEAR_LAST_AFTER_IDLE_SEC:
+                        # сбрасываем "последнюю детекцию", чтобы новый авто не блокировался длинным dup-window
+                        if camera_id in self._last_detection:
+                            del self._last_detection[camera_id]
+                        # держим idle_since на ts, чтобы не дёргать delete каждый кадр
+                        self._idle_since[camera_id] = ts
+
                 return None
+            self._idle_since.pop(camera_id, None)
+            _stage("motion_trigger")
         else:
             _stage("motion_trigger")
+            self._idle_since.pop(camera_id, None)
 
         roi_buffer = self.motion_gate.pop_buffer(camera_id)
         if roi_buffer and (roi_buffer[-1] is not roi_frame):
@@ -157,7 +181,8 @@ class PlateDetectionPipeline:
             return None
 
         _stage("yolo")
-        _stage("ocr")
+        if getattr(self.engine, "enable_ocr", False):
+            _stage("ocr")
         detections = self.engine.detect_one(best_frame)
 
         # фильтруем мусор

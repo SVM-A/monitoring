@@ -6,6 +6,7 @@ import queue
 import sys
 import threading
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
 from threading import Event
 from multiprocessing import Process, Queue, Event as MPEvent
 from typing import Tuple
