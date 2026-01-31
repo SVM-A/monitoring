@@ -116,9 +116,9 @@ class PlateDetectorEngine:
         )
         return gray
 
-    def _ocr_text_and_conf(self, plate_img: np.ndarray) -> tuple[str | None, float]:
+    def _ocr_text_and_conf(self, plate_img: np.ndarray) -> tuple[Optional[str], float, str]:
         if plate_img is None or plate_img.size == 0:
-            return None, 0.0
+            return None, 0.0, "empty_crop"
 
         img = self._prep_for_ocr(plate_img)
 
@@ -128,10 +128,14 @@ class PlateDetectorEngine:
         )
 
         try:
-            data = pytesseract.image_to_data(img, lang=self.ocr_lang, config=cfg, output_type=pytesseract.Output.DICT)
-        except Exception:
-            # OCR упал — просто считаем, что текста нет
-            return None, 0.0
+            data = pytesseract.image_to_data(
+                img,
+                lang=self.ocr_lang,
+                config=cfg,
+                output_type=pytesseract.Output.DICT
+            )
+        except Exception as e:
+            return None, 0.0, f"tesseract_error:{type(e).__name__}"
 
         parts = []
         confs = []
@@ -152,14 +156,13 @@ class PlateDetectorEngine:
         raw = re.sub(r"[^0-9A-ZА-Я]", "", raw)
 
         if not raw:
-            return None, 0.0
+            return None, 0.0, "no_text"
 
-        # нормализация к “латинскому” виду номера
         norm = raw.translate(self._cyr_to_lat)
 
         conf = float(sum(confs) / len(confs)) if confs else 0.0
-        # conf из tesseract обычно 0..100
-        return norm, conf / 100.0
+        return norm, conf / 100.0, "ok"
+
 
     def detect_one(self, frame: np.ndarray) -> List[PlateDetectionResult]:
         if frame is None or frame.size == 0:
@@ -188,7 +191,7 @@ class PlateDetectorEngine:
             text = None
             ocr_score = 0.0
             if self.enable_ocr:
-                text, ocr_score = self._ocr_text_and_conf(crop)
+                text, ocr_score, _reason = self._ocr_text_and_conf(crop)
 
             final_score = yolo_score
 
@@ -205,3 +208,11 @@ class PlateDetectorEngine:
 
     def detect_on_roi(self, frames: List[np.ndarray]) -> List[List[PlateDetectionResult]]:
         return [self.detect_one(f) for f in frames]
+
+    def ocr_on_bbox(self, frame: np.ndarray, bbox: BBoxXYXY) -> tuple[Optional[str], float, str]:
+        """
+        OCR только по bbox (без YOLO). Возвращает (text, conf, reason).
+        """
+        crop = self._crop(frame, bbox)
+        text, conf, reason = self._ocr_text_and_conf(crop)
+        return text, float(conf), str(reason)

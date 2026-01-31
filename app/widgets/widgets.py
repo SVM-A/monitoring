@@ -208,9 +208,9 @@ class PlateGateWidget(WidgetBase):
     def action_confirm(self) -> None:
         with self._lock:
             plate = self.entry_plate_auto.strip()
-            if not plate:
+            if (not plate) or plate.startswith("⛔"):
                 self.entry_status = "Нет распознанного номера для подтверждения."
-                self._append_log("Нечего подтверждать: распознанный номер пустой.")
+                self._append_log("Нечего подтверждать: авто-номер отсутствует или не прочитан.")
                 return
             self.entry_status = f"Номер {plate} подтверждён. Открываем шлагбаум…"
             self._append_log(f"Подтверждён номер (auto): {plate}. Открываем шлагбаум.")

@@ -91,6 +91,19 @@ def processor_proc(
     _hold_emit_every: float = 0.20
     _last_force_ts: float = 0.0
 
+    # ---- OCR session (экономим ресурсы) ----
+    _pending_bbox_xyxy = None          # bbox ROI в XYXY (как из pipeline/result)
+    _pending_since_ts: float = 0.0
+    _pending_ocr_done: bool = False
+    _pending_fail_emitted: bool = False
+    _pending_last_try_ts: float = 0.0
+
+    OCR_STILL_FRAMES: int = 5          # сколько кадров "стоит"
+    OCR_MIN_WAIT_SEC: float = 0.6      # не пытаться OCR сразу после bbox
+    OCR_MAX_SESSION_SEC: float = 6.0   # если за 6с не прочитали — считаем провалом/сбрасываем
+    OCR_RETRY_COOLDOWN_SEC: float = 1.0
+    OCR_FAIL_TEXT: str = "⛔ НЕ ПРОЧИТАН"
+
 
     def normalize_camera_id(s: str) -> str:
         # worker понимает только базовый id
@@ -166,6 +179,12 @@ def processor_proc(
                 _hold_bbox_full = None
                 _hold_text = None
                 _last_hold_emit = 0.0
+
+                _pending_bbox_xyxy = None
+                _pending_since_ts = 0.0
+                _pending_ocr_done = False
+                _pending_fail_emitted = False
+                _pending_last_try_ts = 0.0
 
             elif ctype == "plate_enable":
                 enabled = True
@@ -308,6 +327,97 @@ def processor_proc(
                     except Exception:
                         pass
 
+            # ---- OCR когда машина стоит (без YOLO) ----
+            try:
+                if _pending_bbox_xyxy and not _pending_ocr_done:
+                    snap = pipeline.motion_gate.snapshot(camera_id)
+                    still_frames = int(snap.get("still_frames", 0))
+                    last_motion_ts = float(snap.get("last_motion_ts", 0.0))
+
+                    # если сессия слишком старая — машина вероятно уехала/сцена ушла
+                    if _pending_since_ts and (ts - _pending_since_ts) > OCR_MAX_SESSION_SEC:
+                        _pending_bbox_xyxy = None
+                        _pending_ocr_done = False
+                        _pending_fail_emitted = False
+                        _pending_last_try_ts = 0.0
+                    else:
+                        # OCR делаем только когда "стоит" и прошло немного времени после детекта
+                        if still_frames >= OCR_STILL_FRAMES and (ts - _pending_since_ts) >= OCR_MIN_WAIT_SEC:
+                            if (_pending_last_try_ts == 0.0) or ((ts - _pending_last_try_ts) >= OCR_RETRY_COOLDOWN_SEC):
+                                _pending_last_try_ts = ts
+
+                                # применяем ROI так же, как pipeline
+                                roi_frame2 = frame
+                                if roi_conf:
+                                    from app.video.ffproxy import apply_roi
+                                    roi_frame2 = apply_roi(frame, roi_conf)
+
+                                text, ocr_conf, reason = pipeline.engine.ocr_on_bbox(roi_frame2, _pending_bbox_xyxy)
+
+                                if text:
+                                    plate_text = str(text).strip().upper()
+                                    push_status("found", f"Номер распознан: {plate_text}. Ожидаю подтверждение…", camera_id)
+
+                                    # обновим hold + UI
+                                    _hold_text = plate_text
+                                    _hold_until = ts + 3.0
+
+                                    try:
+                                        events_queue.put_nowait({
+                                            "type": "plate_detection",
+                                            "camera_id": camera_id,
+                                            "text": plate_text,
+                                            "score": float(ocr_conf or 0.0),
+                                            "bbox_roi": _hold_bbox_roi,
+                                            "bbox_full": _hold_bbox_full,
+                                            "ts": ts,
+                                            "ttl_sec": 2.0,
+                                        })
+                                    except Exception:
+                                        pass
+
+                                    try:
+                                        save_detection(
+                                            conn,
+                                            camera_id,
+                                            plate_text,
+                                            bbox=_hold_bbox_roi,
+                                            extra={"detected_by": "ocr_only", "ocr_conf": float(ocr_conf or 0.0), "reason": reason},
+                                        )
+                                    except Exception:
+                                        pass
+
+                                    _pending_ocr_done = True
+                                    _pending_fail_emitted = False
+
+                                else:
+                                    # OCR не получилось: один раз показываем человеку "провал"
+                                    if not _pending_fail_emitted:
+                                        push_status("ocr_fail", f"OCR не прочитал номер ({reason}).", camera_id)
+
+                                        _hold_text = OCR_FAIL_TEXT
+                                        _hold_until = ts + 3.0
+
+                                        try:
+                                            events_queue.put_nowait({
+                                                "type": "plate_detection",
+                                                "camera_id": camera_id,
+                                                "text": OCR_FAIL_TEXT,
+                                                "score": 0.0,
+                                                "bbox_roi": _hold_bbox_roi,
+                                                "bbox_full": _hold_bbox_full,
+                                                "ts": ts,
+                                                "ttl_sec": 2.0,
+                                            })
+                                        except Exception:
+                                            pass
+
+                                        _pending_fail_emitted = True
+                                        _pending_ocr_done = True  # важно: не долбим OCR дальше
+            except Exception:
+                # не валим процесс детекции из-за OCR-сессии
+                pass
+
             maybe_idle(camera_id)
             continue
 
@@ -358,6 +468,14 @@ def processor_proc(
             _hold_text = (str(getattr(result, "text", "") or "").strip().upper() or None)
             _hold_until = ts + 3.0
 
+            # ---- заводим OCR-сессию, если текста нет ----
+            if not (str(getattr(result, "text", "") or "").strip()):
+                _pending_bbox_xyxy = bbox_xyxy  # важно: XYXY в ROI координатах
+                _pending_since_ts = ts
+                _pending_ocr_done = False
+                _pending_fail_emitted = False
+                _pending_last_try_ts = 0.0
+
         except Exception:
             pass
 
@@ -367,6 +485,13 @@ def processor_proc(
             continue
 
         plate_text = str(plate_text_raw).strip().upper()
+
+        _pending_bbox_xyxy = None
+        _pending_ocr_done = True
+        _pending_fail_emitted = False
+        _pending_last_try_ts = 0.0
+        _pending_since_ts = 0.0
+
         push_status("found", f"Номер распознан: {plate_text}. Ожидаю подтверждение…", camera_id)
 
         # сохраняем в БД только когда есть текст

@@ -1,4 +1,7 @@
 # main.py
+import platform
+import shutil
+import subprocess
 import argparse
 import logging
 import os
@@ -65,6 +68,38 @@ def redirect_stderr_to_rotating_log(filepath="logs/ffmpeg_stderr.log", max_bytes
 
     t = threading.Thread(target=reader, daemon=True)
     t.start()
+
+def ensure_no_sleep_ubuntu():
+    """
+    Ubuntu/Linux: запускаем процесс под systemd-inhibit, чтобы
+    система не уходила в сон и не гасила экран, пока работает программа.
+
+    Работает без сторонних библиотек.
+    Требование: systemd + systemd-inhibit (на Ubuntu обычно есть).
+    """
+    if platform.system().lower() != "linux":
+        return
+
+    # если уже перезапущены под inhibit — не делаем рекурсию
+    if os.environ.get("MB_INHIBIT", "") == "1":
+        return
+
+    # systemd-inhibit может отсутствовать в минимальных системах
+    if not shutil.which("systemd-inhibit"):
+        return
+
+    os.environ["MB_INHIBIT"] = "1"
+
+    # Перезапускаем текущий python под systemd-inhibit (block)
+    args = [
+        "systemd-inhibit",
+        "--what=sleep:shutdown:idle:handle-lid-switch",
+        "--mode=block",
+        "--why=MonitoringBazy is running (PlateGate)",
+        sys.executable,
+        *sys.argv,
+    ]
+    os.execvp(args[0], args)
 
 
 def main(selected_cams):
@@ -171,10 +206,12 @@ def main(selected_cams):
 
 
 if __name__ == "__main__":
+    ensure_no_sleep_ubuntu()
+
     redirect_stderr_to_rotating_log(
         filepath="logs/ffmpeg_stderr.log",
-        max_bytes=10 * 1024 * 1024,  # 10 МБ
-        backup_count=5  # сколько файлов сохранять
+        max_bytes=10 * 1024 * 1024,
+        backup_count=5
     )
 
     parser = argparse.ArgumentParser()

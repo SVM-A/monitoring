@@ -48,7 +48,7 @@ class RoiMotionGate:
         self,
         *,
         max_buffer_size: int = 5,
-        min_motion_ratio: float = 0.02,
+        min_motion_ratio: float = 0.005,
         cooldown_sec: float = 0.75,
     ) -> None:
         self.max_buffer_size = max_buffer_size
@@ -141,3 +141,16 @@ class RoiMotionGate:
         state.roi_buffer.clear()
         return buf
 
+    def snapshot(self, camera_id: str) -> dict:
+        """
+        Снимок состояния motion-gate для внешней логики (worker).
+        Ничего не меняет, только читает.
+        """
+        st = self._get_state(camera_id)
+        return {
+            "still_frames": int(st.still_frames),
+            "moving_frames": int(st.moving_frames),
+            "last_motion_ts": float(st.last_motion_ts),
+            "last_trigger_ts": float(st.last_trigger_ts),
+            "buffer_len": int(len(st.roi_buffer)),
+        }
