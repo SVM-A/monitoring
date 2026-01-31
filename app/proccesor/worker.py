@@ -9,6 +9,7 @@ import time
 from app.detector.pipeline import PlateDetectionPipeline
 from app.core.config_cams import PLATE_YOLO_MODEL_PATH
 from app.db.camera_registry import save_detection
+from app.video.recording import recording_by_id
 
 
 def processor_proc(
@@ -36,6 +37,8 @@ def processor_proc(
     last_stage: str = ""
     last_stage_ts: float = 0.0
     last_idle_ts: float = 0.0
+
+
 
     def push_status(stage: str, message: str, cam: str = ""):
         """
@@ -75,6 +78,19 @@ def processor_proc(
     # -------- runtime state --------
     enabled: bool = False
     target_camera_id: str = ""
+    target_use_roi: bool = False
+
+    target_mode: str = "perf"  # "perf" | "accuracy"
+    force_interval_sec: float = 0.8  # для accuracy: раз в 0.8с принудительный проход
+
+    _hold_until: float = 0.0
+    _hold_bbox_roi = None
+    _hold_bbox_full = None
+    _hold_text = None
+    _last_hold_emit: float = 0.0
+    _hold_emit_every: float = 0.20
+    _last_force_ts: float = 0.0
+
 
     def normalize_camera_id(s: str) -> str:
         # worker понимает только базовый id
@@ -115,7 +131,41 @@ def processor_proc(
 
             if ctype == "plate_set_camera":
                 target_camera_id = normalize_camera_id(cmd.get("camera_id") or "")
-                push_status("config", f"Камера контроля выбрана: {target_camera_id or '—'}", target_camera_id)
+                target_use_roi = bool(cmd.get("use_roi") or False)
+
+                m = str(cmd.get("mode") or cmd.get("detect_mode") or "perf").lower().strip()
+                if m not in ("perf", "accuracy"):
+                    m = "perf"
+                target_mode = m
+
+                # интервал для accuracy (сек), можно задавать из UI
+                try:
+                    fi = cmd.get("force_interval_sec", None)
+                    if fi is None:
+                        fi = cmd.get("accuracy_interval_sec", None)
+                    if fi is not None:
+                        force_interval_sec = float(fi)
+                        # защита от мусора
+                        if force_interval_sec < 0.2:
+                            force_interval_sec = 0.2
+                        if force_interval_sec > 10.0:
+                            force_interval_sec = 10.0
+                except Exception:
+                    pass
+
+                # при смене камеры/режима — сбросим таймер, чтобы первый forced сработал сразу
+                _last_force_ts = 0.0
+                src_label = str(cmd.get("source_id") or target_camera_id or "—")
+                if target_mode == "accuracy":
+                    push_status("config", f"Камера контроля: {src_label} • режим: accuracy ({force_interval_sec:.1f}s)",
+                                target_camera_id)
+                else:
+                    push_status("config", f"Камера контроля: {src_label} • режим: perf", target_camera_id)
+                _hold_until = 0.0
+                _hold_bbox_roi = None
+                _hold_bbox_full = None
+                _hold_text = None
+                _last_hold_emit = 0.0
 
             elif ctype == "plate_enable":
                 enabled = True
@@ -126,6 +176,11 @@ def processor_proc(
 
             elif ctype == "plate_disable":
                 enabled = False
+                _hold_until = 0.0
+                _hold_bbox_roi = None
+                _hold_bbox_full = None
+                _hold_text = None
+                _last_hold_emit = 0.0
                 push_status("disabled", "Распознавание выключено.", target_camera_id)
 
         # -------- frame input --------
@@ -158,7 +213,13 @@ def processor_proc(
             push_status("error", "Ошибка декодирования кадра.", camera_id)
             continue
 
-        roi_conf = roi_config.get(camera_id)
+        roi_conf = None
+        if target_use_roi:
+            roi_key = camera_id
+            if is_recording_source_id(camera_id):
+                rec = recording_by_id(camera_id)
+                roi_key = (rec.camera_id if rec else camera_id)
+            roi_conf = roi_config.get(roi_key)
 
         # -------- stage callback for pipeline (если поддерживается) --------
         def on_stage(stage_name: str, payload: dict):
@@ -188,13 +249,24 @@ def processor_proc(
         # -------- run pipeline --------
         result = None
         try:
-            # Если ты уже добавил on_stage в pipeline.process_frame — будет подробная телеметрия.
+            is_rec = is_recording_source_id(camera_id)
+
+            force_detect = False
+            if is_rec:
+                # записи — всегда форсим, чтобы тесты работали предсказуемо
+                force_detect = True
+            elif target_mode == "accuracy":
+                # форсим по таймеру, даже если движения нет
+                if _last_force_ts == 0.0 or (ts - _last_force_ts) >= force_interval_sec:
+                    force_detect = True
+                    _last_force_ts = ts
+
             result = pipeline.process_frame(
                 camera_id=camera_id,
                 frame=frame,
                 roi_conf=roi_conf,
                 ts=ts,
-                force_detect=is_recording_source_id(camera_id),
+                force_detect=force_detect,
                 on_stage=on_stage,
             )
         except TypeError:
@@ -218,54 +290,24 @@ def processor_proc(
 
         # -------- result handling --------
         if not result:
-            # если пайплайн вернул None — обычно это "нет триггера motion" или "не найден номер"
-            maybe_idle(camera_id)
-            continue
+            # если недавно был bbox — держим рамку без YOLO/без OCR
+            if enabled and camera_id == target_camera_id and (_hold_bbox_full or _hold_bbox_roi) and ts < _hold_until:
+                if (ts - _last_hold_emit) >= _hold_emit_every:
+                    _last_hold_emit = ts
+                    try:
+                        events_queue.put_nowait({
+                            "type": "plate_detection",
+                            "camera_id": camera_id,
+                            "text": _hold_text,
+                            "score": 0.0,
+                            "bbox_roi": _hold_bbox_roi,
+                            "bbox_full": _hold_bbox_full,
+                            "ts": ts,
+                            "ttl_sec": 1.0,
+                        })
+                    except Exception:
+                        pass
 
-        # Этап 1: детекция рамки номера (bbox) — даже если OCR ещё не подключён (text=None)
-        bbox_xyxy = getattr(result, "bbox", None)
-        if not bbox_xyxy:
-            maybe_idle(camera_id)
-            continue
-
-        # Конвертация XYXY -> XYWH (как ожидает CanvasWidget)
-        try:
-            x1, y1, x2, y2 = map(int, bbox_xyxy)
-            w = max(1, x2 - x1)
-            h = max(1, y2 - y1)
-            bbox_roi_xywh = [x1, y1, w, h]
-        except Exception:
-            bbox_roi_xywh = None
-
-        # full bbox (если rect ROI — добавляем смещение)
-        bbox_full_xywh = bbox_roi_xywh
-        try:
-            if bbox_roi_xywh and isinstance(roi_conf, dict) and roi_conf.get("type") == "rect":
-                ox = int(roi_conf.get("x") or 0)
-                oy = int(roi_conf.get("y") or 0)
-                bbox_full_xywh = [bbox_roi_xywh[0] + ox, bbox_roi_xywh[1] + oy, bbox_roi_xywh[2], bbox_roi_xywh[3]]
-        except Exception:
-            bbox_full_xywh = bbox_roi_xywh
-
-        # Статус: номерной знак найден (но текст может быть ещё не распознан)
-        push_status("plate_found", "Найден номерной знак. Выполняю распознавание…", camera_id)
-
-        # Событие детекции -> для обводки в Canvas
-        try:
-            events_queue.put_nowait({
-                "type": "plate_detection",
-                "camera_id": camera_id,
-                "text": (str(result.text).strip().upper() if getattr(result, "text", None) else None),
-                "score": float(getattr(result, "score", 0.0) or 0.0),
-                "bbox_roi": bbox_roi_xywh,
-                "bbox_full": bbox_full_xywh,
-                "ts": ts,
-            })
-        except Exception:
-            pass
-
-        # -------- result handling --------
-        if not result:
             maybe_idle(camera_id)
             continue
 
@@ -288,8 +330,8 @@ def processor_proc(
         bbox_full = bbox_roi
         try:
             if bbox_roi and isinstance(roi_conf, dict) and roi_conf.get("type") == "rect":
-                ox = int(roi_conf.get("x") or 0)
-                oy = int(roi_conf.get("y") or 0)
+                ox = int((roi_conf.get("rect") or [0, 0, 0, 0])[0] or 0)
+                oy = int((roi_conf.get("rect") or [0, 0, 0, 0])[1] or 0)
                 bbox_full = [bbox_roi[0] + ox, bbox_roi[1] + oy, bbox_roi[2], bbox_roi[3]]
         except Exception:
             bbox_full = bbox_roi
@@ -307,7 +349,15 @@ def processor_proc(
                 "bbox_roi": bbox_roi,
                 "bbox_full": bbox_full,
                 "ts": ts,
+                "ttl_sec": 2.0,
             })
+
+            # --- hold focus for UI overlay ---
+            _hold_bbox_roi = bbox_roi
+            _hold_bbox_full = bbox_full
+            _hold_text = (str(getattr(result, "text", "") or "").strip().upper() or None)
+            _hold_until = ts + 3.0
+
         except Exception:
             pass
 
@@ -331,30 +381,20 @@ def processor_proc(
         except Exception:
             pass
 
-        # bbox: ROI coords -> full coords (если rect ROI)
-        bbox_roi = list(result.bbox) if getattr(result, "bbox", None) else None
-        bbox_full = None
-        try:
-            if bbox_roi and isinstance(roi_conf, dict) and roi_conf.get("type") == "rect":
-                ox = int(roi_conf.get("x") or 0)
-                oy = int(roi_conf.get("y") or 0)
-                x, y, w, h = map(int, bbox_roi)
-                bbox_full = [x + ox, y + oy, w, h]
-            else:
-                bbox_full = bbox_roi
-        except Exception:
-            bbox_full = bbox_roi
+        # обновим hold текст и продлим фокус, чтобы рамка/текст не мигали
+        _hold_text = plate_text
+        _hold_until = ts + 3.0
 
-        # событие детекции -> для обводки
         try:
             events_queue.put_nowait({
                 "type": "plate_detection",
                 "camera_id": camera_id,
                 "text": plate_text,
-                "score": float(result.score or 0.0),
+                "score": float(getattr(result, "score", 0.0) or 0.0),
                 "bbox_roi": bbox_roi,
                 "bbox_full": bbox_full,
                 "ts": ts,
+                "ttl_sec": 2.0,
             })
         except Exception:
             pass

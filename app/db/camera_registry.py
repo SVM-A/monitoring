@@ -169,33 +169,80 @@ class CameraRuntime:
 # PlateGate settings (persistent)
 # -----------------------------------------------------------------------------
 
-PLATEGATE_SETTINGS_ID = "__plategate__"
+# app/db/camera_registry.py
 
+PLATEGATE_SETTINGS_ID = "__plategate__"
 
 def load_plategate_settings() -> dict:
     """
-    Настройки виджета PlateGateWidget, чтобы переживали перезапуск.
-    Храним в camera_settings под camera_id="__plategate__".
-
     Формат:
       {
-        "control_camera_id": "entry gate",
-        "recognition_enabled": True
+        "control_source_id": "...",
+        "recognition_enabled": bool,
+        "detect_mode": "perf" | "accuracy",
+        "accuracy_interval_sec": float
       }
+
+    Миграция:
+      - если было старое "control_camera_id" -> считаем что это base без ROI
     """
     obj = CameraSettings.load(PLATEGATE_SETTINGS_ID)
     data = (obj.data if obj else {}) or {}
+
+    control_source_id = str(data.get("control_source_id") or "")
+    if not control_source_id:
+        control_source_id = str(data.get("control_camera_id") or "")
+
+    detect_mode = str(data.get("detect_mode") or "perf").lower()
+    if detect_mode not in ("perf", "accuracy"):
+        detect_mode = "perf"
+
+    try:
+        accuracy_interval_sec = float(data.get("accuracy_interval_sec") or 1.0)
+    except Exception:
+        accuracy_interval_sec = 1.0
+
+    # защита
+    if accuracy_interval_sec < 0.2:
+        accuracy_interval_sec = 0.2
+    if accuracy_interval_sec > 10.0:
+        accuracy_interval_sec = 10.0
+
     return {
-        "control_camera_id": str(data.get("control_camera_id") or ""),
+        "control_source_id": control_source_id,
         "recognition_enabled": bool(data.get("recognition_enabled") or False),
+        "detect_mode": detect_mode,
+        "accuracy_interval_sec": accuracy_interval_sec,
     }
 
 
-def save_plategate_settings(*, control_camera_id: str, recognition_enabled: bool) -> None:
+def save_plategate_settings(
+    *,
+    control_source_id: str,
+    recognition_enabled: bool,
+    detect_mode: str = "perf",
+    accuracy_interval_sec: float = 1.0,
+) -> None:
+    detect_mode = str(detect_mode or "perf").lower()
+    if detect_mode not in ("perf", "accuracy"):
+        detect_mode = "perf"
+
+    try:
+        accuracy_interval_sec = float(accuracy_interval_sec)
+    except Exception:
+        accuracy_interval_sec = 1.0
+
+    if accuracy_interval_sec < 0.2:
+        accuracy_interval_sec = 0.2
+    if accuracy_interval_sec > 10.0:
+        accuracy_interval_sec = 10.0
+
     CameraSettings.save(
         PLATEGATE_SETTINGS_ID,
         {
-            "control_camera_id": str(control_camera_id or ""),
+            "control_source_id": str(control_source_id or ""),
             "recognition_enabled": bool(recognition_enabled),
+            "detect_mode": detect_mode,
+            "accuracy_interval_sec": accuracy_interval_sec,
         }
     )

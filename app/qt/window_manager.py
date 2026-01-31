@@ -569,7 +569,14 @@ class WindowManager(QtWidgets.QWidget):
             if cam_id and (bbox_full or bbox_roi):
                 for w in list(self._wins.values()):
                     try:
-                        w.canvas.set_plate_overlay(cam_id, bbox_full=bbox_full, bbox_roi=bbox_roi, ttl_sec=1.5)
+                        ttl = 1.5
+                        try:
+                            ttl = float(ev.get("ttl_sec", 1.5) or 1.5)
+                        except Exception:
+                            ttl = 1.5
+
+                        w.canvas.set_plate_overlay(cam_id, bbox_full=bbox_full, bbox_roi=bbox_roi, ttl_sec=ttl)
+
                     except Exception:
                         pass
 

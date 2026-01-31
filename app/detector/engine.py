@@ -127,7 +127,11 @@ class PlateDetectorEngine:
             f'-c tessedit_char_whitelist={self._whitelist}'
         )
 
-        data = pytesseract.image_to_data(img, lang=self.ocr_lang, config=cfg, output_type=pytesseract.Output.DICT)
+        try:
+            data = pytesseract.image_to_data(img, lang=self.ocr_lang, config=cfg, output_type=pytesseract.Output.DICT)
+        except Exception:
+            # OCR упал — просто считаем, что текста нет
+            return None, 0.0
 
         parts = []
         confs = []

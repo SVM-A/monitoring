@@ -254,6 +254,8 @@ class CanvasWidget(QtWidgets.QWidget):
         p = e.position().toPoint()
         x, y = p.x(), p.y()
 
+        if not self.last_rects:
+            self.update()
         # --- правый клик: контекстное меню режимов ---
         if e.button() == QtCore.Qt.MouseButton.RightButton:
             for cid, (x0, y0, x1, y1) in self.last_rects.items():
@@ -531,10 +533,18 @@ class CanvasWidget(QtWidgets.QWidget):
     def _mode_for(self, cid: str) -> str:
         """
         Вернуть текущий режим для источника:
-        1) из локального кэша,
-        2) если нет — из QSettings,
-        3) по умолчанию 'fit'.
+        1) виджеты всегда stretch (чтобы клики не съезжали при letterbox)
+        2) иначе: кэш -> QSettings -> 'fit'
         """
+        # Для половинок cam:A / cam:B смотрим базовую камеру
+        base_id = self._base_cam(cid) if self._is_virtual_half(cid) else cid
+        spec = CAM_SOURCES.get(base_id, {}) or {}
+
+        # КЛЮЧЕВО: виджеты всегда растягиваем на весь прямоугольник плитки
+        if spec.get("type") == "widget":
+            self._aspect_modes[cid] = "stretch"
+            return "stretch"
+
         if cid in self._aspect_modes:
             return self._aspect_modes[cid]
 

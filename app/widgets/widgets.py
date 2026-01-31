@@ -17,6 +17,14 @@ WIDGET_CONTROLLERS: Dict[str, object] = {}
 
 SOURCE_STARTER = None  # type: ignore
 
+_ROI_SUFFIX = " [ROI]"
+
+def parse_source_id(s: str) -> tuple[str, bool]:
+    s = (s or "").strip()
+    if s.endswith(_ROI_SUFFIX):
+        return s[:-len(_ROI_SUFFIX)].strip(), True
+    return s, False
+
 def set_source_starter(fn):
     """
     WindowManager прокидывает сюда функцию ensure_source_running,
@@ -95,13 +103,23 @@ class PlateGateWidget(WidgetBase):
     Ввод номера — через QInputDialog при клике по зоне ввода.
     """
 
-    _BTN_CONFIRM = (0.06, 0.58, 0.46, 0.66)
-    _BTN_APPLY   = (0.54, 0.58, 0.94, 0.66)
-    _BTN_OPEN    = (0.06, 0.70, 0.62, 0.78)
-    _BTN_MUTE    = (0.68, 0.70, 0.94, 0.78)
-    _FIELD_INPUT = (0.06, 0.46, 0.94, 0.54)
-    _BTN_SELECT_STREAM = (0.06, 0.32, 0.60, 0.40)
-    _BTN_TOGGLE_RECOG  = (0.64, 0.32, 0.94, 0.40)
+    # Управление под статусом
+    _BTN_SELECT_STREAM = (0.04, 0.40, 0.62, 0.47)
+    _BTN_TOGGLE_RECOG = (0.04, 0.48, 0.62, 0.55)
+    _BTN_TOGGLE_MODE = (0.04, 0.56, 0.62, 0.63)
+    _BTN_SET_INTERVAL = (0.04, 0.64, 0.62, 0.71)
+
+    # Поле ввода
+    _FIELD_INPUT = (0.04, 0.73, 0.62, 0.81)
+
+    # Действия 2x2 — НЕ конфликтуют и красиво
+    _BTN_CONFIRM = (0.04, 0.83, 0.32, 0.90)
+    _BTN_APPLY = (0.34, 0.83, 0.62, 0.90)
+    _BTN_OPEN = (0.04, 0.91, 0.40, 0.98)
+    _BTN_MUTE = (0.42, 0.91, 0.62, 0.98)
+
+    # Лог справа остаётся
+    _LOG_BOX = (0.66, 0.14, 0.96, 0.94)
 
     def __init__(self, camera_id: str, ui_queue, stop_event, plate_control_queue):
         super().__init__(camera_id, ui_queue, stop_event)
@@ -120,8 +138,16 @@ class PlateGateWidget(WidgetBase):
 
         # persistent settings
         st = load_plategate_settings()
-        self.control_camera_id: str = st.get("control_camera_id") or ""
-        self.recognition_enabled: bool = bool(st.get("recognition_enabled") or False)
+        self.control_source_id = st.get("control_source_id") or ""
+        self.recognition_enabled = bool(st.get("recognition_enabled") or False)
+        self.detect_mode = str(st.get("detect_mode") or "perf").lower()
+        if self.detect_mode not in ("perf", "accuracy"):
+            self.detect_mode = "perf"
+
+        try:
+            self.accuracy_interval_sec = float(st.get("accuracy_interval_sec") or 1.0)
+        except Exception:
+            self.accuracy_interval_sec = 1.0
 
         if self.recognition_enabled:
             self.entry_status = "Распознавание включено. Ожидание движения в зоне контроля…"
@@ -131,8 +157,16 @@ class PlateGateWidget(WidgetBase):
         # При старте приложения — восстановим режим в processor_proc
         # (очередь уже существует, процесс может стартовать чуть позже — не страшно)
         try:
-            if self.control_camera_id:
-                self.plate_control_queue.put_nowait({"type": "plate_set_camera", "camera_id": self.control_camera_id})
+            if self.control_source_id:
+                base_id, use_roi = parse_source_id(self.control_source_id)
+                self.plate_control_queue.put_nowait({
+                    "type": "plate_set_camera",
+                    "camera_id": base_id,
+                    "use_roi": use_roi,
+                    "source_id": self.control_source_id,
+                    "mode": self.detect_mode,
+                })
+
             if self.recognition_enabled:
                 self.plate_control_queue.put_nowait({"type": "plate_enable"})
             else:
@@ -225,6 +259,14 @@ class PlateGateWidget(WidgetBase):
             self.action_toggle_recognition()
             return True
 
+        if hit(self._BTN_TOGGLE_MODE):
+            self.action_toggle_detect_mode()
+            return True
+
+        if hit(self._BTN_SET_INTERVAL):
+            self.action_set_accuracy_interval(parent)
+            return True
+
         if hit(self._BTN_CONFIRM):
             self.action_confirm()
             return True
@@ -257,15 +299,60 @@ class PlateGateWidget(WidgetBase):
         return False
 
     def _render_panel(self, W: int = 1920, H: int = 1080) -> np.ndarray:
-        # локальные алиасы на палитру
         C = DS.color
 
         def rr(draw: ImageDraw.ImageDraw, box, r: int, fill, outline=None, w: int = 1):
-            # PIL умеет rounded_rectangle
             draw.rounded_rectangle(box, radius=r, fill=fill, outline=outline, width=w)
 
         def card(draw: ImageDraw.ImageDraw, box):
             rr(draw, box, r=DS.radii.lg, fill=C.panel, outline=C.grid, w=2)
+
+        def to_px(r):
+            x0, y0, x1, y1 = r
+            return int(x0 * W), int(y0 * H), int(x1 * W), int(y1 * H)
+
+        def draw_btn(draw: ImageDraw.ImageDraw, r, title: str, kind="secondary"):
+            rx0, ry0, rx1, ry1 = to_px(r)
+            if kind == "primary":
+                fill, txt = C.ok, C.bg
+            elif kind == "danger":
+                fill, txt = C.alert, C.bg
+            else:
+                fill, txt = C.cell, C.text
+
+            rr(draw, (rx0, ry0, rx1, ry1), r=18, fill=fill, outline=C.grid, w=2)
+
+            bbox = draw.textbbox((0, 0), title, font=FONT20 or FONT18)
+            tw = bbox[2] - bbox[0]
+            th = bbox[3] - bbox[1]
+            draw.text((rx0 + (rx1 - rx0 - tw) // 2, ry0 + (ry1 - ry0 - th) // 2),
+                      title, fill=txt, font=FONT20 or FONT18)
+
+        def wrap_text(draw: ImageDraw.ImageDraw, text: str, font, max_w: int, max_lines: int = 4) -> list[str]:
+            text = (text or "").strip()
+            if not text:
+                return ["—"]
+            words = text.split()
+            lines: list[str] = []
+            cur = ""
+            for w0 in words:
+                cand = (cur + " " + w0).strip()
+                bw = draw.textbbox((0, 0), cand, font=font)[2]
+                if bw <= max_w or not cur:
+                    cur = cand
+                else:
+                    lines.append(cur)
+                    cur = w0
+                    if len(lines) >= max_lines:
+                        break
+            if len(lines) < max_lines and cur:
+                lines.append(cur)
+            if len(lines) >= max_lines and len(words) > 0:
+                # если обрезали — добавим "…"
+                last = lines[-1]
+                if not last.endswith("…"):
+                    lines[-1] = last + "…"
+            return lines
 
         with self._lock:
             status = self.entry_status
@@ -276,81 +363,84 @@ class PlateGateWidget(WidgetBase):
             wait = self._wait_elapsed
             log_lines = list(self._log)
 
+            cam_label = self.control_source_id or "—"
+            recog = self.recognition_enabled
+            mode = self.detect_mode
+            interval = float(getattr(self, "accuracy_interval_sec", 1.0))
+
         img = Image.new("RGB", (W, H), C.bg)
         d = ImageDraw.Draw(img)
 
-        pad = 36
+        pad = 30
+
+        # Заголовок
         d.text((pad, pad), "Шлагбаум — ВЪЕЗД", fill=C.text, font=FONT28 or FONT24)
 
-        badge = "ДВИЖЕНИЕ" if motion else "ОЖИДАНИЕ"
+        badge = "ДВИЖЕНИЕ" if motion else "МОНИТОРИНГ"
         badge_fill = C.ok if motion else C.sub
-        rr(d, (W - 360, pad - 4, W - pad, pad + 40), r=14, fill=badge_fill)
-        d.text((W - 340, pad + 4), badge, fill=C.bg, font=FONT18 or FONT16)
+        rr(d, (W - 340, pad - 2, W - pad, pad + 42), r=14, fill=badge_fill)
+        d.text((W - 320, pad + 6), badge, fill=C.bg, font=FONT18 or FONT16)
 
-        y = pad + 70
-        card(d, (pad, y, W - pad, y + 220))
-        d.text((pad + 24, y + 18), "Статус", fill=C.sub, font=FONT18 or FONT16)
-        d.text((pad + 24, y + 54), status, fill=C.text, font=FONT24 or FONT20)
+        # Правая колонка: лог
+        lx0, ly0, lx1, ly1 = to_px(self._LOG_BOX)
+        card(d, (lx0, ly0, lx1, ly1))
+        d.text((lx0 + 20, ly0 + 16), "Лог", fill=C.sub, font=FONT18 or FONT16)
 
-        d.text((pad + 24, y + 118), f"Auto:  {auto_plate or '—'}", fill=C.text, font=FONT20)
-        d.text((pad + 24, y + 154), f"Manual: {manual_plate or '—'}", fill=C.text, font=FONT20)
-        d.text((W - pad - 420, y + 154), f"Ожидание: {wait:>2} c", fill=C.sub, font=FONT18 or FONT16)
+        yy = ly0 + 52
+        for line in log_lines[-20:]:
+            d.text((lx0 + 20, yy), line, fill=C.text, font=FONT16)
+            yy += 26
+            if yy > (ly1 - 20):
+                break
 
-        # поле ввода (как “input”)
-        x0, y0, x1, y1 = self._FIELD_INPUT
-        bx0 = int(x0 * W);
-        by0 = int(y0 * H);
-        bx1 = int(x1 * W);
-        by1 = int(y1 * H)
+        # Левая колонка: карточка статуса
+        # Область слева: x=[0.04..0.62]
+        left_x0 = int(0.04 * W)
+        left_x1 = int(0.62 * W)
+
+        # Карточка статуса
+        st_top = int(0.14 * H)
+        st_h = int(0.24 * H)
+        card(d, (left_x0, st_top, left_x1, st_top + st_h))
+        d.text((left_x0 + 20, st_top + 16), "Статус", fill=C.sub, font=FONT18 or FONT16)
+
+        # Статус с переносом
+        max_w = (left_x1 - left_x0) - 40
+        lines = wrap_text(d, status, FONT24 or FONT20, max_w=max_w, max_lines=4)
+        ytxt = st_top + 54
+        for ln in lines:
+            d.text((left_x0 + 20, ytxt), ln, fill=C.text, font=FONT24 or FONT20)
+            ytxt += 34
+
+        d.text((left_x0 + 20, st_top + st_h - 80), f"Auto:  {auto_plate or '—'}", fill=C.text, font=FONT20)
+        d.text((left_x0 + 20, st_top + st_h - 44), f"Manual: {manual_plate or '—'}", fill=C.text, font=FONT20)
+        d.text((left_x1 - 260, st_top + st_h - 44), f"Ожидание: {wait:>2} c", fill=C.sub, font=FONT18 or FONT16)
+
+        # Кнопки управления (верхние)
+        draw_btn(d, self._BTN_SELECT_STREAM, f"Контроль: {cam_label}", "secondary")
+        draw_btn(d, self._BTN_TOGGLE_RECOG,
+                 "Распознавание: ON" if recog else "Распознавание: OFF",
+                 "primary" if recog else "secondary")
+
+        mode_label = "Режим: Точность" if mode == "accuracy" else "Режим: Производительность"
+        draw_btn(d, self._BTN_TOGGLE_MODE, mode_label, "secondary")
+
+        int_label = f"Интервал: {interval:.1f}s" if mode == "accuracy" else "Интервал: —"
+        draw_btn(d, self._BTN_SET_INTERVAL, int_label, "secondary")
+
+        # Поле ввода
+        bx0, by0, bx1, by1 = to_px(self._FIELD_INPUT)
         rr(d, (bx0, by0, bx1, by1), r=18, fill=C.cell, outline=C.grid, w=2)
-        d.text((bx0 + 18, by0 + 14), manual_plate or "Ввести номер…", fill=C.text, font=FONT24 or FONT20)
+        d.text((bx0 + 18, by0 + 14),
+               manual_plate or "Ввести номер…",
+               fill=C.text, font=FONT24 or FONT20)
 
-        def draw_btn(r, title, kind="primary"):
-            x0, y0, x1, y1 = r
-            rx0 = int(x0 * W);
-            ry0 = int(y0 * H);
-            rx1 = int(x1 * W);
-            ry1 = int(y1 * H)
+        # Действия (2x2)
+        draw_btn(d, self._BTN_CONFIRM, "Подтвердить (auto)", "primary")
+        draw_btn(d, self._BTN_APPLY, "Принять (manual)", "primary")
+        draw_btn(d, self._BTN_OPEN, "Открыть шлагбаум", "danger")
+        draw_btn(d, self._BTN_MUTE, "Mute: ON" if muted else "Mute: OFF", "secondary")
 
-            if kind == "primary":
-                fill = C.ok
-                txt = C.bg
-            elif kind == "danger":
-                fill = C.alert
-                txt = C.bg
-            else:
-                fill = C.cell
-                txt = C.text
-
-            rr(d, (rx0, ry0, rx1, ry1), r=18, fill=fill, outline=C.grid, w=2)
-            bbox = d.textbbox((0, 0), title, font=FONT20 or FONT18)
-            tw = bbox[2] - bbox[0]
-            th = bbox[3] - bbox[1]
-            d.text((rx0 + (rx1 - rx0 - tw) // 2, ry0 + (ry1 - ry0 - th) // 2), title, fill=txt, font=FONT20 or FONT18)
-
-        # Кнопки управления распознаванием
-        with self._lock:
-            cam_label = self.control_camera_id or "—"
-            recog = self.recognition_enabled
-
-        draw_btn(self._BTN_SELECT_STREAM, f"Контроль: {cam_label}", "secondary")
-        draw_btn(self._BTN_TOGGLE_RECOG, "Распознавание: ON" if recog else "Распознавание: OFF", "primary" if recog else "secondary")
-
-        draw_btn(self._BTN_CONFIRM, "Подтвердить (auto)", "primary")
-        draw_btn(self._BTN_APPLY, "Принять (manual)", "primary")
-        draw_btn(self._BTN_OPEN, "Открыть шлагбаум", "danger")
-        draw_btn(self._BTN_MUTE, "Mute: ON" if muted else "Mute: OFF", "secondary")
-
-        # лог
-        ly0 = int(0.80 * H)
-        card(d, (pad, ly0, W - pad, H - pad))
-        d.text((pad + 24, ly0 + 16), "Лог", fill=C.sub, font=FONT18 or FONT16)
-        yy = ly0 + 50
-        for line in log_lines[-8:]:
-            d.text((pad + 24, yy), line, fill=C.text, font=FONT16)
-            yy += 28
-
-        # PIL -> OpenCV (BGR)
         return np.array(img)[:, :, ::-1].copy()
 
     def action_select_stream(self, parent: QtWidgets.QWidget) -> None:
@@ -374,11 +464,12 @@ class PlateGateWidget(WidgetBase):
         # уникализируем, сортируем
         cam_ids = sorted(set(items))
 
-        cur = self.control_camera_id or (cam_ids[0] if cam_ids else "")
         if not cam_ids:
             with self._lock:
                 self.entry_status = "Нет доступных потоков для контроля."
             return
+
+        cur = self.control_source_id or cam_ids[0]
 
         sel, ok = QtWidgets.QInputDialog.getItem(
             parent,
@@ -391,27 +482,127 @@ class PlateGateWidget(WidgetBase):
         if not ok:
             return
 
+        chosen = str(sel)
+        base_id, use_roi = parse_source_id(chosen)
+
         with self._lock:
-            chosen = str(sel)
-            self.control_camera_id = chosen
-            base_id = chosen[:-len(" [ROI]")] if chosen.endswith(" [ROI]") else chosen
+            self.control_source_id = chosen
 
         try:
             if callable(SOURCE_STARTER) and base_id:
                 SOURCE_STARTER(base_id)
         except Exception:
             pass
-        # persist + отправим в процесс
-        save_plategate_settings(control_camera_id=base_id, recognition_enabled=self.recognition_enabled)
+
+        save_plategate_settings(
+            control_source_id=chosen,
+            recognition_enabled=self.recognition_enabled,
+            detect_mode=self.detect_mode,
+            accuracy_interval_sec=getattr(self, "accuracy_interval_sec", 1.0),
+        )
+
         try:
-            self.plate_control_queue.put_nowait({"type": "plate_set_camera", "camera_id": base_id})
+            self.plate_control_queue.put_nowait({
+                "type": "plate_set_camera",
+                "camera_id": base_id,
+                "use_roi": use_roi,
+                "source_id": chosen,
+                "mode": self.detect_mode,
+            })
+        except Exception:
+            pass
+
+    def action_toggle_detect_mode(self) -> None:
+        with self._lock:
+            self.detect_mode = "accuracy" if self.detect_mode == "perf" else "perf"
+            mode_label = "Точность" if self.detect_mode == "accuracy" else "Производительность"
+
+            interval = float(getattr(self, "accuracy_interval_sec", 1.0))
+            if self.detect_mode == "accuracy":
+                self.entry_status = f"Режим детекции: {mode_label} (интервал {interval:.1f}s)"
+            else:
+                self.entry_status = f"Режим детекции: {mode_label}"
+
+            self._append_log(f"Режим детекции переключён: {self.detect_mode}")
+
+            save_plategate_settings(
+                control_source_id=self.control_source_id,
+                recognition_enabled=self.recognition_enabled,
+                detect_mode=self.detect_mode,
+                accuracy_interval_sec=interval,
+            )
+
+        cid = self.control_source_id or ""
+        base_id, use_roi = parse_source_id(cid)
+
+        try:
+            if base_id:
+                self.plate_control_queue.put_nowait({
+                    "type": "plate_set_camera",
+                    "camera_id": base_id,
+                    "use_roi": use_roi,
+                    "source_id": cid,
+                    "mode": self.detect_mode,
+                    "force_interval_sec": interval,
+                })
+        except Exception:
+            pass
+
+    def action_set_accuracy_interval(self, parent: QtWidgets.QWidget) -> None:
+        with self._lock:
+            cur = float(getattr(self, "accuracy_interval_sec", 1.0))
+            mode = self.detect_mode
+
+        if mode != "accuracy":
+            with self._lock:
+                self.entry_status = "Интервал доступен только в режиме «Точность»."
+                self._append_log("Пытались изменить интервал вне режима accuracy.")
+            return
+
+        val, ok = QtWidgets.QInputDialog.getDouble(
+            parent,
+            "Интервал детекции (accuracy)",
+            "Секунд между принудительными проверками:",
+            cur,
+            0.2,
+            10.0,
+            1
+        )
+        if not ok:
+            return
+
+        with self._lock:
+            self.accuracy_interval_sec = float(val)
+            self.entry_status = f"Интервал accuracy: {self.accuracy_interval_sec:.1f}s"
+            self._append_log(f"Интервал accuracy установлен: {self.accuracy_interval_sec:.1f}s")
+
+            save_plategate_settings(
+                control_source_id=self.control_source_id,
+                recognition_enabled=self.recognition_enabled,
+                detect_mode=self.detect_mode,
+                accuracy_interval_sec=self.accuracy_interval_sec,
+            )
+
+        # применяем в worker сразу
+        cid = self.control_source_id or ""
+        base_id, use_roi = parse_source_id(cid)
+        try:
+            if base_id:
+                self.plate_control_queue.put_nowait({
+                    "type": "plate_set_camera",
+                    "camera_id": base_id,
+                    "use_roi": use_roi,
+                    "source_id": cid,
+                    "mode": self.detect_mode,
+                    "force_interval_sec": self.accuracy_interval_sec,
+                })
         except Exception:
             pass
 
     def action_toggle_recognition(self) -> None:
         # base_id нужен и для стартера, и для processor_proc
-        cid = self.control_camera_id or ""
-        base_id = cid[:-len(" [ROI]")] if cid.endswith(" [ROI]") else cid
+        cid = self.control_source_id or ""
+        base_id, use_roi = parse_source_id(cid)
 
         with self._lock:
             self.recognition_enabled = not self.recognition_enabled
@@ -432,12 +623,23 @@ class PlateGateWidget(WidgetBase):
                 pass
 
         # persist
-        save_plategate_settings(control_camera_id=base_id, recognition_enabled=enabled)
+        save_plategate_settings(
+            control_source_id=cid,
+            recognition_enabled=self.recognition_enabled,
+            detect_mode=self.detect_mode,
+            accuracy_interval_sec=getattr(self, "accuracy_interval_sec", 1.0),
+        )
 
         # команды в процесс
         try:
             if base_id:
-                self.plate_control_queue.put_nowait({"type": "plate_set_camera", "camera_id": base_id})
+                self.plate_control_queue.put_nowait({
+                    "type": "plate_set_camera",
+                    "camera_id": base_id,
+                    "use_roi": use_roi,
+                    "source_id": cid,
+                    "mode": self.detect_mode,
+                })
             self.plate_control_queue.put_nowait({"type": "plate_enable" if enabled else "plate_disable"})
         except Exception:
             pass
@@ -455,8 +657,8 @@ class PlateGateWidget(WidgetBase):
             msg = str(ev.get("message") or "")
 
             with self._lock:
-                cur = self.control_camera_id or ""
-                cur_base = cur[:-len(" [ROI]")] if cur.endswith(" [ROI]") else cur
+                cur = self.control_source_id or ""
+                cur_base, _ = parse_source_id(cur)
                 if cam_id and (cam_id != cur_base):
                     return
 
@@ -482,9 +684,9 @@ class PlateGateWidget(WidgetBase):
             text = str(ev.get("text") or "").strip().upper()
 
             with self._lock:
-                cur = self.control_camera_id or ""
-                cur_base = cur[:-len(" [ROI]")] if cur.endswith(" [ROI]") else cur
-                if cam_id != cur_base:
+                cur = self.control_source_id or ""
+                cur_base, _ = parse_source_id(cur)
+                if cam_id and (cam_id != cur_base):
                     return
                 if text:
                     self.entry_plate_auto = text
@@ -495,7 +697,6 @@ class PlateGateWidget(WidgetBase):
                     self.entry_status = "Найден номерной знак. Распознаю символы…"
                 self.entry_motion = True
                 self._start_wait()
-                self._append_log(f"Авто-номер: {text}")
             return
 
 
